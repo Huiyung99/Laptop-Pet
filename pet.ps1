@@ -1424,6 +1424,7 @@ function Build-PetMenu($P) {
     if ($P.kind -eq 'fish' -or $P.kind -eq 'mouse') { $miClothes.Visible = $false; $miPhoto.Visible = $false }
     [void](Add-MenuItem $m '加满喂食器' { Refill })
     [void](Add-MenuItem $m '便条' { Show-Note })
+    [void](Add-MenuItem $m '定时提醒…' { Show-RemindersDialog })
     $P.miTalk = Add-MenuItem $m '说话…' { param($src, $e) Show-Talk $src.Owner.Tag }
     $P.miPair = Add-MenuItem $m '聊天配对…' { Show-Pair }
     [void](Add-MenuItem $m '添加宠物…' { Show-AddPetDialog })
@@ -2406,6 +2407,7 @@ $lblAuto = Add-MenuLabel $feederMenu $false
 [void]$feederMenu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
 [void](Add-MenuItem $feederMenu '加满饭和水' { Refill })
 [void](Add-MenuItem $feederMenu '便条' { Show-Note })
+[void](Add-MenuItem $feederMenu '定时提醒…' { Show-RemindersDialog })
 [void](Add-MenuItem $feederMenu '聊天配对…' { Show-Pair })
 [void](Add-MenuItem $feederMenu '添加宠物…' { Show-AddPetDialog })
 [void]$feederMenu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
@@ -2696,12 +2698,12 @@ function Cut-Text($s, $max) {
 }
 
 # 宠物头上的对话框 (15 秒, 点一下关掉)
-function Show-Chat($P, $from, $body) {
+function Show-Chat($P, $from, $body, $ticks = 375) {     # ticks: 显示多久 (25 = 1 秒)
     if ($P.chat -and -not $P.chat.form.IsDisposed) { $P.chat.form.Close() }
     $tmp = New-Object Drawing.Bitmap(1, 1); $mg = [Drawing.Graphics]::FromImage($tmp)
     $s1 = $mg.MeasureString($from, $fontChatB, 240); $s2 = $mg.MeasureString($body, $fontUI, 240)
     $mg.Dispose(); $tmp.Dispose()
-    $c = @{ from = $from; body = $body; until = $Clock.tick + 375; h1 = [int]$s1.Height
+    $c = @{ from = $from; body = $body; until = $Clock.tick + $ticks; h1 = [int]$s1.Height
             w = [int]([Math]::Max($s1.Width, $s2.Width)) + 22; h = [int]($s1.Height + $s2.Height) + 24 }
     $fm = New-PetWindow $c.w $c.h
     $fm.Owner = $P.form
@@ -2790,8 +2792,106 @@ function Show-Pair {
     } finally { $d.Dispose() }
 }
 
-# ---------- 自动更新: 从 GitHub 拿新版本, 签名对得上才装 (只有 exe 装的才会更新) ----------
-$AppVersion = 6
+# ---------- 定时提醒: 到时间就有一只宠物跑出来提醒你 (存在 reminders.json) ----------
+$RemindersFile = Join-Path $PSScriptRoot 'reminders.json'
+$DefaultReminders = @(
+    @{ time = '08:00'; text = '早安! 开工啦~ 今天也加油!' },
+    @{ time = '10:00'; text = '休息一下吧~ 起来走走, 喝口水!' },
+    @{ time = '10:15'; text = '休息完了, 要上班啦!' },
+    @{ time = '12:00'; text = '午餐时间! 去吃饭吧~' },
+    @{ time = '12:45'; text = '吃饱了吗? 开工啦!' },
+    @{ time = '15:00'; text = '下午茶时间! 休息一下~' },
+    @{ time = '15:15'; text = '好啦, 继续加油!' },
+    @{ time = '17:30'; text = '下班啦! 辛苦了~' }
+)
+$Reminders = @{ weekdays = $true; sound = $true; items = @($DefaultReminders) }
+$RemState = @{ last = '' }
+function Load-Reminders {
+    if (-not (Test-Path -LiteralPath $RemindersFile)) { return }
+    try {
+        $o = [IO.File]::ReadAllText($RemindersFile) | ConvertFrom-Json
+        $Reminders.weekdays = [bool]$o.weekdays; $Reminders.sound = [bool]$o.sound
+        $Reminders.items = @($o.items | ForEach-Object { @{ time = [string]$_.time; text = [string]$_.text } })
+    } catch { }
+}
+function Save-Reminders {
+    if (-not $Live) { return }
+    $o = [ordered]@{ weekdays = $Reminders.weekdays; sound = $Reminders.sound; items = @($Reminders.items | ForEach-Object { [ordered]@{ time = $_.time; text = $_.text } }) }
+    try { [IO.File]::WriteAllText($RemindersFile, (ConvertTo-Json -InputObject $o -Depth 4), (New-Object Text.UTF8Encoding($false))) } catch { }
+}
+# 每秒看一次时间, 每分钟只响一次
+function Check-Reminders {
+    $now = Get-Date
+    $hm = $now.ToString('HH:mm')
+    if ($RemState.last -eq $hm) { return }
+    $RemState.last = $hm
+    if ($Reminders.weekdays -and ($now.DayOfWeek -eq 'Saturday' -or $now.DayOfWeek -eq 'Sunday')) { return }   # 周末不吵你
+    foreach ($r in $Reminders.items) { if ($r.time -eq $hm) { Fire-Reminder $r } }
+}
+# 选一只宠物 (猫狗兔优先), 跑到屏幕中间, 对话框显示 1 分钟, 叮一声
+function Fire-Reminder($r) {
+    $pp = @($Pets | Where-Object { -not $_.visitor -and $_.kind -ne 'fish' -and $_.kind -ne 'mouse' })
+    if (-not $pp.Count) { $pp = @($Pets | Where-Object { -not $_.visitor }) }
+    if (-not $pp.Count) { return }
+    $P = $pp[$rand.Next($pp.Count)]
+    Show-Chat $P "$($r.time) 提醒" $r.text 1500
+    if ($Reminders.sound) { [Media.SystemSounds]::Asterisk.Play() }
+    if ($P.kind -eq 'fish' -or $P.drag -or $P.stay) { return }
+    if ($P.game) { End-Friend $P.game $false }
+    if ($P.mode -eq 'sleep') { $P.mode = 'idle' }            # 睡觉也会起来提醒你
+    if (@('idle', 'walk', 'trick', 'fly', 'ball', 'chase', 'land') -contains $P.mode -or ($P.mode -eq 'goto' -and $P.next -eq 'land')) {
+        $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $P.jumpT = 0; $P.prey = $null
+        Go-To $P ($wa.Left + $wa.Width / 2 - $P.w / 2 + $rand.Next(-120, 121)) ($wa.Bottom - $P.h) 'land'
+    }
+}
+# 一行一个: "08:00 开工啦!" -> @{ time = '08:00'; text = '开工啦!' }. 看不懂的行放进 $bad
+function Parse-Reminders($text, [ref]$bad) {
+    $items = New-Object System.Collections.ArrayList; $badLines = @()
+    foreach ($line in ($text -split "`r?`n")) {
+        $ln = $line.Trim(); if (-not $ln) { continue }
+        if ($ln -match '^(\d{1,2})\s*[:：.]\s*(\d{2})\s+(.+)$' -and [int]$Matches[1] -lt 24 -and [int]$Matches[2] -lt 60) {
+            [void]$items.Add(@{ time = ('{0:D2}:{1:D2}' -f [int]$Matches[1], [int]$Matches[2]); text = $Matches[3].Trim() })
+        } else { $badLines += $ln }
+    }
+    $bad.Value = $badLines
+    @($items | Sort-Object { $_.time })
+}
+function Reminders-Text($items) { (@($items | ForEach-Object { "$($_.time) $($_.text)" }) -join "`r`n") }
+function Show-RemindersDialog {
+    $d = New-Object Windows.Forms.Form
+    $d.Text = '定时提醒'
+    $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
+    $d.StartPosition = 'CenterScreen'; $d.TopMost = $true; $d.Font = $fontUI
+    $d.ClientSize = New-Object Drawing.Size(380, 330)
+    $lb = New-Object Windows.Forms.Label; $lb.Text = "一行一个提醒: 时间 + 空格 + 要说的话, 例如:`n08:00 开工啦!"; $lb.SetBounds(12, 10, 356, 36)
+    $tb = New-Object Windows.Forms.TextBox; $tb.Multiline = $true; $tb.AcceptsReturn = $true; $tb.ScrollBars = 'Vertical'; $tb.SetBounds(12, 50, 356, 180)
+    $tb.Font = New-Object Drawing.Font('Microsoft YaHei UI', 10); $tb.Text = Reminders-Text $Reminders.items
+    $wk = New-Object Windows.Forms.CheckBox; $wk.Text = '只在星期一到五提醒 (周末不吵你)'; $wk.Checked = $Reminders.weekdays; $wk.SetBounds(12, 238, 356, 22)
+    $snd = New-Object Windows.Forms.CheckBox; $snd.Text = '提醒时叮一声'; $snd.Checked = $Reminders.sound; $snd.SetBounds(12, 262, 200, 22)
+    $def = New-Object Windows.Forms.Button; $def.Text = '恢复默认'; $def.SetBounds(12, 292, 80, 28)
+    $def.add_Click({ param($src, $e) $src.FindForm().Controls[1].Text = Reminders-Text $DefaultReminders })
+    $try = New-Object Windows.Forms.Button; $try.Text = '试一下'; $try.SetBounds(98, 292, 70, 28)
+    $try.add_Click({ param($src, $e)                     # 马上用第一行提醒一次, 看看样子
+        $bad = $null; $it = @(Parse-Reminders $src.FindForm().Controls[1].Text ([ref]$bad))
+        if ($it.Count) { Fire-Reminder $it[0] }
+    })
+    $ok = New-Object Windows.Forms.Button; $ok.Text = '好'; $ok.SetBounds(212, 292, 75, 28)
+    $no = New-Object Windows.Forms.Button; $no.Text = '取消'; $no.DialogResult = 'Cancel'; $no.SetBounds(293, 292, 75, 28)
+    $ok.add_Click({ param($src, $e)
+        $fm = $src.FindForm(); $bad = $null
+        $it = @(Parse-Reminders $fm.Controls[1].Text ([ref]$bad))
+        if ($bad.Count) { [void][Windows.Forms.MessageBox]::Show($fm, "这几行看不懂, 要像 08:00 开工啦! 这样写:`n`n" + ($bad -join "`n"), '定时提醒'); return }
+        $Reminders.items = $it; $Reminders.weekdays = $fm.Controls[2].Checked; $Reminders.sound = $fm.Controls[3].Checked
+        Save-Reminders
+        $fm.DialogResult = 'OK'
+    })
+    $d.Controls.AddRange(@($lb, $tb, $wk, $snd, $def, $try, $ok, $no)); $d.CancelButton = $no
+    $d.add_Shown({ param($src, $e) $box = $src.Controls[1]; $box.SelectionStart = 0; $box.SelectionLength = 0 })   # 打开时不要全选, 免得一按键就全没了
+    try { [void]$d.ShowDialog() } finally { $d.Dispose() }
+}
+
+# ---------- 自动更新: 从 GitHub 拿新版本, 签名对得上才装 (只有 exe 装的才会更新) ----------$AppVersion = 6
 $UpdateUrl = 'https://raw.githubusercontent.com/Huiyung99/Laptop-Pet/main/update/'
 $UpdatePubKey = '<RSAKeyValue><Modulus>m43v3YuEWypkH3H1iwF1Rpq0HXVYexJsmpTLMkqTZ+hww+h67OiiaNd8pFFEOGg+TZ1qwLloQW3F/d8wT80XWcx/77qGAfMHjiT2M40jv5kF4fCo9K+AEI9qJvBpGcGW+IukbdHKdi4roQmHiTqF+ShI1U8UueKNzvgGQIsj+eWlZY5jsyKKfz9QTX8pYQEYF8IMUxvMoYSgvNXZLaT4AO0rmYGWlCmn54bW7gZpHLz71PGKeGPAfm8YqbkStyXCFdSE7gP1pthYSZ6CuFF0ev4fXB84nYMNHSq37vcYm5y5gOmW40cszDYHubDbEm1+xsfJKHwy1eqhjL4Xb4VD0h0EnU44U7TQfKyFKJvC5Dj1PfLbMomASjdCPMucFTEwp/UqTI0niuMamv8Y/GbPg+jQm+vGvApN9FZD3b8rnEZyHe9iW0uQJ0pb1lJK80Yrls6JlzF0Cqq+fa7w9U2S21byal0Sr/VUzPVnKdtKx1Prc2X0thLlP73LWHHe2rSh</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LaptopPet'
@@ -2876,8 +2976,9 @@ $timer.add_Tick({
     }
     if ($Clock.tick % 1500 -eq 0) { Save-Pets; Save-Chat }       # 每分钟存一次亲密度和陪伴时间
     if ($NoteState.dirty -and $Clock.tick % 50 -eq 0) { Save-Note }   # 便条有改就 2 秒内存好
-    if ($Clock.tick % 25 -eq 13) { Poll-Desktop }
-    if ($Clock.tick % 25 -eq 7) { Check-AutoRefill }    # 喂食器空了 15 分钟主人都没加, 就自己加满       # 每秒看一次桌面
+    if ($Clock.tick % 25 -eq 13) { Poll-Desktop }       # 每秒看一次桌面
+    if ($Clock.tick % 25 -eq 7) { Check-AutoRefill }    # 喂食器空了 15 分钟主人都没加, 就自己加满
+    if ($Clock.tick % 25 -eq 19) { Check-Reminders }    # 定时提醒
     Update-Ball
     Update-Fly
     Assign-Tasks
@@ -2894,6 +2995,7 @@ if ($Live) {
     Load-Pets
     Load-Note
     Load-Chat
+    Load-Reminders
     Announce-Update
     $timer.Start()
     [Windows.Forms.Application]::Run()
