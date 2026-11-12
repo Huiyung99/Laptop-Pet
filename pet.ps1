@@ -1544,10 +1544,10 @@ function Set-PetHat($P, $bmp) {                 # 头饰也放 clothes 文件夹
 $StickerNames = @('bow', 'crown', 'partyhat', 'glasses', 'heart', 'star', 'flower', 'paw', 'bone', 'fish', 'smile', 'note')
 function Sticker-Brush($r, $gg, $b) { New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(255, $r, $gg, $b)) }
 # 在 (cx, cy) 画一个大约 s 宽的贴纸 (用 -0.5..0.5 的小格子画, 再放大)
-function Draw-Sticker($g, $name, $cx, $cy, $s) {
+function Draw-Sticker($g, $name, $cx, $cy, $s, $angle = 0, $flip = 1) {     # angle: 转几度, flip: -1 = 左右翻
     $gs = $g.Save()
     $g.SmoothingMode = 'AntiAlias'
-    $g.TranslateTransform([float]$cx, [float]$cy); $g.ScaleTransform([float]$s, [float]$s)
+    $g.TranslateTransform([float]$cx, [float]$cy); $g.RotateTransform([float]$angle); $g.ScaleTransform([float]($s * $flip), [float]$s)
     if ($name -is [Drawing.Image]) {                     # 自己的图片: 长边 = s
         $iw = 1.0; $ih = 1.0
         if ($name.Width -gt $name.Height) { $ih = $name.Height / $name.Width } else { $iw = $name.Width / $name.Height }
@@ -1657,22 +1657,35 @@ function Shrink-Image($img, $max) {             # 缩小到长边最多 $max (�
 # 贴上去的贴纸先不印死: 可以拖、拉右下角改大小、右键删掉. 按「穿上」才印到衣服上
 function St-Size($ui) { (6 + $ui.size * 2.5) * $ui.box.k }
 function St-Tol($ui) { 10 / $ui.zoom / $ui.look.sc * $ui.box.k }          # 10 个画面点 = 衣服图上多少
+function St-Local($s, $pt) {                    # 衣服图上的点 -> 贴纸自己的坐标 (转回去)
+    $r = -$s.a * [Math]::PI / 180; $dx = $pt.X - $s.x; $dy = $pt.Y - $s.y
+    @(($dx * [Math]::Cos($r) - $dy * [Math]::Sin($r)), ($dx * [Math]::Sin($r) + $dy * [Math]::Cos($r)))
+}
+function St-Corner($s, $lx, $ly) {              # 贴纸自己的坐标 -> 衣服图上的点 (跟着转)
+    $r = $s.a * [Math]::PI / 180
+    New-Object Drawing.PointF(($s.x + $lx * [Math]::Cos($r) - $ly * [Math]::Sin($r)), ($s.y + $lx * [Math]::Sin($r) + $ly * [Math]::Cos($r)))
+}
+function St-RotOff($ui) { 2.2 * (St-Tol $ui) }  # 转方向的绿点离贴纸上边多远
 function St-Hit($ui, $pt) {                     # 点到哪个贴纸 (上面的先)
     for ($i = $ui.stickers.Count - 1; $i -ge 0; $i--) {
-        $s = $ui.stickers[$i]
-        if ([Math]::Abs($pt.X - $s.x) -le $s.s / 2 -and [Math]::Abs($pt.Y - $s.y) -le $s.s / 2) { return $s }
+        $s = $ui.stickers[$i]; $l = St-Local $s $pt
+        if ([Math]::Abs($l[0]) -le $s.s / 2 -and [Math]::Abs($l[1]) -le $s.s / 2) { return $s }
     }
     $null
 }
-function St-OnHandle($ui, $s, $pt) {            # 点到右下角的小方块
-    $t = St-Tol $ui
-    ([Math]::Abs($pt.X - ($s.x + $s.s / 2)) -le $t) -and ([Math]::Abs($pt.Y - ($s.y + $s.s / 2)) -le $t)
+function St-OnHandle($ui, $s, $pt) {            # 点到右下角的蓝色小方块
+    $t = St-Tol $ui; $c = St-Corner $s ($s.s / 2) ($s.s / 2)
+    ([Math]::Abs($pt.X - $c.X) -le $t) -and ([Math]::Abs($pt.Y - $c.Y) -le $t)
+}
+function St-OnRotate($ui, $s, $pt) {            # 点到上面的绿色圆点
+    $t = St-Tol $ui; $c = St-Corner $s 0 (-$s.s / 2 - (St-RotOff $ui))
+    ([Math]::Abs($pt.X - $c.X) -le $t * 1.2) -and ([Math]::Abs($pt.Y - $c.Y) -le $t * 1.2)
 }
 function Layer-Composite($ly) {                 # 画的 + 贴纸, 合成一张
     $c = $ly.bmp.Clone()
     if ($ly.stickers.Count) {
         $gr = [Drawing.Graphics]::FromImage($c)
-        foreach ($s in $ly.stickers) { Draw-Sticker $gr $s.name $s.x $s.y $s.s }
+        foreach ($s in $ly.stickers) { Draw-Sticker $gr $s.name $s.x $s.y $s.s $s.a $s.f }
         $gr.Dispose()
     }
     $c
@@ -1704,7 +1717,7 @@ function Clothes-Stroke($ui, $a, $b) {
     $pen.Dispose(); $gr.Dispose()
 }
 function Clothes-Undo-Push($ui) {               # 记下现在的样子 (画的 + 贴纸)
-    [void]$ui.undo.Add(@{ bmp = $ui.bmp.Clone(); st = @($ui.stickers | ForEach-Object { @{ name = $_.name; x = $_.x; y = $_.y; s = $_.s } }) })
+    [void]$ui.undo.Add(@{ bmp = $ui.bmp.Clone(); st = @($ui.stickers | ForEach-Object { @{ name = $_.name; x = $_.x; y = $_.y; s = $_.s; a = $_.a; f = $_.f } }) })
     if ($ui.undo.Count -gt 30) { $ui.undo[0].bmp.Dispose(); $ui.undo.RemoveAt(0) }
 }
 function Draw-ClothesCanvas($ui, $g) {
@@ -1715,13 +1728,21 @@ function Draw-ClothesCanvas($ui, $g) {
     $saveLabel = ${function:Label}; ${function:Label} = {}     # 不画名字
     try { Draw-Pet $ui.look $g } finally { ${function:Label} = $saveLabel; $ui.look.clothes = $null; $ui.look.hat = $null; $cc.Dispose(); $hc.Dispose() }
     $sel = $ui.selSt
-    if ($sel) {                                                # 选中的贴纸: 蓝色虚线框 + 右下角拉大小的方块
+    if ($sel) {                                                # 选中的贴纸: 跟着转的蓝色虚线框 + 右下角蓝方块 (大小) + 上面绿点 (方向)
         $L = $ui.look; $b = $ui.box
-        $sx = $L.w / 2 + ($b.x + ($sel.x - $sel.s / 2) / $b.k) * $L.sc; $sy = $YOFF + ($b.y + ($sel.y - $sel.s / 2) / $b.k) * $L.sc; $sw = $sel.s / $b.k * $L.sc
-        $pen = New-Object Drawing.Pen(([Drawing.Color]::FromArgb(255, 40, 120, 230)), (1.5 / $ui.zoom)); $pen.DashStyle = 'Dash'
-        $g.DrawRectangle($pen, (F $sx), (F $sy), (F $sw), (F $sw)); $pen.Dispose()
-        $hs = 9 / $ui.zoom; $hb = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(255, 40, 120, 230))
-        $g.FillRectangle($hb, (F ($sx + $sw - $hs / 2)), (F ($sy + $sw - $hs / 2)), (F $hs), (F $hs)); $hb.Dispose()
+        $gs = $g.Save()
+        $g.TranslateTransform((F ($L.w / 2 + ($b.x + $sel.x / $b.k) * $L.sc)), (F ($YOFF + ($b.y + $sel.y / $b.k) * $L.sc)))
+        $g.RotateTransform([float]$sel.a)
+        $half = $sel.s / $b.k * $L.sc / 2; $off = (St-RotOff $ui) / $b.k * $L.sc
+        $blue = [Drawing.Color]::FromArgb(255, 40, 120, 230)
+        $pen = New-Object Drawing.Pen($blue, (1.5 / $ui.zoom)); $pen.DashStyle = 'Dash'
+        $g.DrawRectangle($pen, (F (-$half)), (F (-$half)), (F (2 * $half)), (F (2 * $half)))
+        $pen.DashStyle = 'Solid'; $g.DrawLine($pen, (F 0), (F (-$half)), (F 0), (F (-$half - $off))); $pen.Dispose()
+        $hs = 9 / $ui.zoom; $hb = New-Object Drawing.SolidBrush $blue
+        $g.FillRectangle($hb, (F ($half - $hs / 2)), (F ($half - $hs / 2)), (F $hs), (F $hs)); $hb.Dispose()
+        $gb = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(255, 60, 180, 90)); $rs = 11 / $ui.zoom
+        $g.FillEllipse($gb, (F (-$rs / 2)), (F (-$half - $off - $rs / 2)), (F $rs), (F $rs)); $gb.Dispose()
+        $g.Restore($gs)
     }
     if ($ui.mode -eq 'hat') {                                  # 头饰模式: 虚线框出可以画的地方
         $L = $ui.look
@@ -1774,6 +1795,7 @@ function Show-ClothesDialog($P) {
         }
         if ($e.Button -ne 'Left') { return }
         $sel = $ui.selSt
+        if ($sel -and (St-OnRotate $ui $sel $pt)) { Clothes-Undo-Push $ui; $ui.drag = @{ mode = 'rotate'; st = $sel }; return }  # 拉绿点转方向
         if ($sel -and (St-OnHandle $ui $sel $pt)) { Clothes-Undo-Push $ui; $ui.drag = @{ mode = 'size'; st = $sel }; return }   # 拉角改大小
         $h = St-Hit $ui $pt
         if ($h) {                                                     # 点到贴纸: 选中, 可以拖
@@ -1784,7 +1806,7 @@ function Show-ClothesDialog($P) {
         }
         if ($ui.sticker) {                                            # 拿着贴纸点空的地方: 贴一个新的
             Clothes-Undo-Push $ui
-            $n = @{ name = $ui.sticker; x = $pt.X; y = $pt.Y; s = (St-Size $ui) }
+            $n = @{ name = $ui.sticker; x = $pt.X; y = $pt.Y; s = (St-Size $ui); a = 0.0; f = 1 }
             [void]$ui.stickers.Add($n); $ui.selSt = $n; $ui.drag = @{ mode = 'move'; st = $n; dx = 0; dy = 0 }
             $src.Invalidate(); return
         }
@@ -1797,12 +1819,19 @@ function Show-ClothesDialog($P) {
         $pt = Clothes-Point $ui $e.X $e.Y
         if ($ui.drag) {
             $s = $ui.drag.st
+            $dx = $pt.X - $s.x; $dy = $pt.Y - $s.y
             if ($ui.drag.mode -eq 'move') { $s.x = $pt.X - $ui.drag.dx; $s.y = $pt.Y - $ui.drag.dy }
-            else { $s.s = [Math]::Max(4 * $ui.box.k, 2 * [Math]::Max([Math]::Abs($pt.X - $s.x), [Math]::Abs($pt.Y - $s.y))) }
+            elseif ($ui.drag.mode -eq 'rotate') {                     # 绿点在哪个方向, 贴纸的上面就朝哪里
+                $a = [Math]::Atan2($dy, $dx) * 180 / [Math]::PI + 90
+                $snap = [Math]::Round($a / 90) * 90; if ([Math]::Abs($a - $snap) -lt 6) { $a = $snap }   # 接近正的就吸过去
+                $s.a = (($a % 360) + 360) % 360
+            }
+            else { $s.s = [Math]::Max(4 * $ui.box.k, [Math]::Sqrt(2) * [Math]::Sqrt($dx * $dx + $dy * $dy)) }
             $src.Invalidate(); return
         }
         if ($e.Button -eq 'None') {                                   # 滑鼠形状告诉你可以做什么
-            $src.Cursor = if ($ui.selSt -and (St-OnHandle $ui $ui.selSt $pt)) { [Windows.Forms.Cursors]::SizeNWSE }
+            $src.Cursor = if ($ui.selSt -and (St-OnRotate $ui $ui.selSt $pt)) { [Windows.Forms.Cursors]::Hand }
+                          elseif ($ui.selSt -and (St-OnHandle $ui $ui.selSt $pt)) { [Windows.Forms.Cursors]::SizeNWSE }
                           elseif (St-Hit $ui $pt) { [Windows.Forms.Cursors]::SizeAll }
                           elseif ($ui.sticker) { [Windows.Forms.Cursors]::Hand } else { [Windows.Forms.Cursors]::Cross }
             return
@@ -1811,6 +1840,12 @@ function Show-ClothesDialog($P) {
         Clothes-Stroke $ui $ui.last $pt; $ui.last = $pt; $src.Invalidate()
     })
     $cv.add_MouseUp({ param($src, $e) $ui = $src.FindForm().Tag; $ui.last = $null; $ui.drag = $null })
+    $cv.add_MouseDoubleClick({ param($src, $e)                    # 双击贴纸 = 左右翻过来
+        if ($e.Button -ne 'Left') { return }
+        $ui = $src.FindForm().Tag
+        $h = St-Hit $ui (Clothes-Point $ui $e.X $e.Y)
+        if ($h) { $h.f = -$h.f; $src.Invalidate() }
+    })
     $ui.canvas = $cv
 
     $x0 = $cw + 22; $y = 10
@@ -1858,7 +1893,7 @@ function Show-ClothesDialog($P) {
     $clr = New-Object Windows.Forms.Button; $clr.Text = '全部擦掉'; $clr.SetBounds(($x0 + 84), $y, 80, 28)
     $clr.add_Click({ param($src, $e) $ui = $src.FindForm().Tag; Clothes-Undo-Push $ui; $gr = [Drawing.Graphics]::FromImage($ui.bmp); $gr.Clear([Drawing.Color]::Transparent); $gr.Dispose(); $ui.stickers.Clear(); $ui.selSt = $null; $ui.canvas.Invalidate() })
     $d.Controls.Add($clr); $y += 38
-    $stl = New-Object Windows.Forms.Label; $stl.Text = "贴纸: 选一个, 再点宠物身上.`n贴好可以拖, 拉蓝色角改大小, 右键删掉"; $stl.SetBounds($x0, $y, 176, 54); $d.Controls.Add($stl); $y += 56
+    $stl = New-Object Windows.Forms.Label; $stl.Text = "贴纸: 选一个, 再点宠物身上.`n拖=移动   蓝角=大小`n绿点=转方向   双击=左右翻`n右键=删掉"; $stl.SetBounds($x0, $y, 178, 72); $d.Controls.Add($stl); $y += 74
     $i = 0
     foreach ($sn in $StickerNames) {
         $kb = New-Object Windows.Forms.Button
@@ -2562,7 +2597,7 @@ function Show-Pair {
 }
 
 # ---------- 自动更新: 从 GitHub 拿新版本, 签名对得上才装 (只有 exe 装的才会更新) ----------
-$AppVersion = 4
+$AppVersion = 5
 $UpdateUrl = 'https://raw.githubusercontent.com/Huiyung99/Laptop-Pet/main/update/'
 $UpdatePubKey = '<RSAKeyValue><Modulus>m43v3YuEWypkH3H1iwF1Rpq0HXVYexJsmpTLMkqTZ+hww+h67OiiaNd8pFFEOGg+TZ1qwLloQW3F/d8wT80XWcx/77qGAfMHjiT2M40jv5kF4fCo9K+AEI9qJvBpGcGW+IukbdHKdi4roQmHiTqF+ShI1U8UueKNzvgGQIsj+eWlZY5jsyKKfz9QTX8pYQEYF8IMUxvMoYSgvNXZLaT4AO0rmYGWlCmn54bW7gZpHLz71PGKeGPAfm8YqbkStyXCFdSE7gP1pthYSZ6CuFF0ev4fXB84nYMNHSq37vcYm5y5gOmW40cszDYHubDbEm1+xsfJKHwy1eqhjL4Xb4VD0h0EnU44U7TQfKyFKJvC5Dj1PfLbMomASjdCPMucFTEwp/UqTI0niuMamv8Y/GbPg+jQm+vGvApN9FZD3b8rnEZyHe9iW0uQJ0pb1lJK80Yrls6JlzF0Cqq+fa7w9U2S21byal0Sr/VUzPVnKdtKx1Prc2X0thLlP73LWHHe2rSh</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LaptopPet'
