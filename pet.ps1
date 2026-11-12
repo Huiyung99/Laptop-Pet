@@ -222,6 +222,7 @@ function Draw-Pet($P, [Drawing.Graphics]$g) {
     $g.ScaleTransform($P.sc, $P.sc)
     $saved = $g.Save()
     $g.TranslateTransform(0, $down)
+    if ($st -eq 'trick' -and $P.trickT -gt 0) { Trick-Transform $P $g }     # 打滚 / 伸懒腰 / 开心跳 / 追尾巴
     $g.ScaleTransform($P.dir, 1)
 
     if ($kind -eq 'fish') {
@@ -409,7 +410,7 @@ function Draw-Pet($P, [Drawing.Graphics]$g) {
                 Blob $g $brWhite ($ex - 5) ($ey - 5) 10 10
                 $g.FillEllipse($brDark, (F ($ex - 2)), (F ($ey - 2)), (F 4), (F 4))
             }
-            { $_ -eq 'eat' -or $_ -eq 'drink' -or $_ -eq 'pat' } { $g.DrawLines($penOut, (Pts @(($ex - 4), ($ey + 2), $ex, ($ey - 2), ($ex + 4), ($ey + 2)))) }
+            { $_ -eq 'eat' -or $_ -eq 'drink' -or $_ -eq 'pat' -or $_ -eq 'groom' } { $g.DrawLines($penOut, (Pts @(($ex - 4), ($ey + 2), $ex, ($ey - 2), ($ex + 4), ($ey + 2)))) }
             'poop' { $g.DrawLine($penOut, (F ($ex - 4)), (F $ey), (F ($ex + 4)), (F $ey)) }   # 用力眯眼
             { $_ -eq 'starve' -or $_ -eq 'sleep' } { $g.DrawArc($penOut, (F ($ex - 4)), (F ($ey - 1)), (F 8), (F 6), (F 0), (F 180)) }
             default {
@@ -443,6 +444,9 @@ function Draw-Pet($P, [Drawing.Graphics]$g) {
     } elseif ($st -eq 'drink') {
         $th = if (($f % 8) -lt 4) { 8 } else { 4 }
         $g.FillEllipse($brPink, (F 25), (F 84), (F 7), (F $th))
+    } elseif ($st -eq 'groom') {          # 舔毛: 小舌头伸出来
+        $th = if (($f % 10) -lt 5) { 7 } else { 4 }
+        $g.FillEllipse($brPink, (F 25), (F 84), (F 7), (F $th)); $g.DrawEllipse($penOut, (F 25), (F 84), (F 7), (F $th))
     } elseif ($sad) {                     # 嘴巴往下
         $g.DrawArc($penOut, (F 24), (F 86), (F 9), (F 6), (F 180), (F 180))
     } elseif ($breed -eq 'golden') {      # 鼻子下面一条短线 + 小嘴
@@ -650,6 +654,9 @@ function Update-Pet($P) {
     }
     if ($P.hover) { $P.state = 'idle'; return }                 # 被滑鼠指着: 停下来不动
     if ($P.mode -eq 'chase') { Update-Chase $P; return }          # 猫追鱼
+    if ($P.mode -eq 'trick') { Update-Trick $P; return }          # 自己玩
+    if ($P.mode -eq 'friend') { Update-Friend $P $wa; return }   # 跟朋友玩
+    if ($P.mode -eq 'fly') { Update-FlyChase $P $wa; return }     # 追蝴蝶
     if ($P.mode -eq 'ball') { Update-BallChase $P $wa; return }   # 狗追球
 
     # 饿了去吃饭, 困了去睡觉
@@ -700,6 +707,18 @@ function Update-Pet($P) {
     if ($P.kind -eq 'cat' -and $P.energy -gt 60 -and $rand.Next(700) -eq 0 -and @(Fish-List).Count -gt 0) {
         Start-Chase $P (Nearest-Fish $P) $false 300; Say $P '鱼! 抓抓~'; return
     }
+    # 没事做的时候自己找乐子: 追蝴蝶 / 玩把戏 / 找朋友玩 / 自己去玩球
+    if ($P.energy -gt 30 -and $P.hunger -ge 40) {
+        if ($Fly.on -and $Fly.flee -eq 0 -and $P.kind -ne 'mouse' -and (Fly-Chasers) -lt 2 -and [Math]::Abs($Fly.x - ($P.x + $P.w / 2)) -lt 500 -and $rand.Next(60) -eq 0) {
+            $P.mode = 'fly'; $P.chaseT = 600; $P.jumpT = 0; $P.state = 'walk'; Say $P '蝴蝶! 等等我~'; return
+        }
+        if ($rand.Next(1500) -eq 0) { Start-Trick $P; return }
+        if ($rand.Next(2000) -eq 0) { $pal = Find-Pal $P; if ($pal) { Start-Friend $P $pal; return } }
+        if (($P.kind -eq 'dog' -or $P.kind -eq 'cat') -and $P.energy -gt 50 -and $Clock.tick -gt $P.ballRest -and -not (Ball-Moving) -and -not @($Pets | Where-Object { $_.mode -eq 'ball' }).Count -and $rand.Next($(if ($P.kind -eq 'dog') { 1000 } else { 2500 })) -eq 0) {
+            $P.mode = 'ball'; $P.kicks = 0; $P.chaseT = 500; $P.state = 'walk'
+            Say $P $(if ($P.kind -eq 'dog') { '玩球去~' } else { '球球… 拍一下!' }) 40; return
+        }
+    }
     # 猫和狗有精力时偶尔去追老鼠玩
     if (($P.kind -eq 'cat' -or $P.kind -eq 'dog') -and $P.energy -gt 50 -and $Clock.tick -gt $P.mouseRest -and $rand.Next(600) -eq 0) {
         $mm = Nearest-Mouse $P
@@ -735,6 +754,12 @@ function Doing($P) {
     }
     if ($P.state -eq 'walk' -and $P.mode -eq 'chase') { return $(if ($P.prey.kind -eq 'mouse') { '追老鼠玩' } elseif ($P.chaseEat) { '抓鱼吃' } else { '追鱼玩' }) }
     if ($P.state -eq 'walk' -and $P.mode -eq 'ball') { return '追球' }
+    if ($P.mode -eq 'trick') { return $TrickName[$P.trick] }
+    if ($P.mode -eq 'fly') { return '追蝴蝶' }
+    if ($P.mode -eq 'friend' -and $P.game) {
+        $o = Friend-Other $P
+        if ($P.game.kind -eq 'sniff') { return "跟$($o.name)打招呼" } elseif ([object]::ReferenceEquals($P.game.it, $P)) { return "在抓$($o.name)" } else { return "被$($o.name)追" }
+    }
     switch ($P.state) {
         'sleep' { '睡觉' }
         'eat' { '吃东西' }
@@ -963,6 +988,167 @@ function Call-Chaser($m) {
     else { Say $m '没有猫狗有空~' }
 }
 
+# ---------- 自己玩: 伸懒腰、打滚、舔毛 (猫)、追尾巴 (狗)、开心跳 (兔子) ----------
+$TrickLen = @{ stretch = 60; roll = 50; groom = 100; tail = 75; binky = 32 }
+$TrickSay = @{ stretch = '伸个懒腰~'; roll = '打个滚~'; groom = '舔舔毛~'; tail = '尾巴! 别跑!'; binky = '开心跳跳!' }
+$TrickName = @{ stretch = '伸懒腰'; roll = '打滚'; groom = '舔毛'; tail = '追自己的尾巴'; binky = '开心跳跳' }
+function Start-Trick($P) {
+    $list = switch ($P.kind) { 'cat' { @('stretch', 'roll', 'groom') } 'dog' { @('stretch', 'roll', 'tail') } 'rabbit' { @('binky', 'binky', 'roll', 'stretch') } default { @('stretch') } }
+    $tk = $list[$rand.Next($list.Count)]
+    $P.mode = 'trick'; $P.trick = $tk; $P.trickT = $TrickLen[$tk]; $P.trickLen = $TrickLen[$tk]
+    $P.state = $(if ($tk -eq 'groom') { 'groom' } else { 'trick' })
+    Say $P $TrickSay[$tk] 50
+}
+function Update-Trick($P) {
+    $P.trickT--
+    $P.state = if ($P.trick -eq 'groom') { 'groom' } else { 'trick' }
+    if ($P.trick -eq 'tail' -and $P.frame % 7 -eq 0) { $P.dir = -$P.dir }      # 转来转去追尾巴
+    if ($P.trickT -le 0) { $P.mode = 'idle'; $P.modeT = 40; $P.state = 'idle' }
+}
+function Trick-Transform($P, $g) {             # 画的时候整只转 / 歪 / 跳
+    $prog = 1 - $P.trickT / [double]$P.trickLen
+    switch ($P.trick) {
+        'roll' { $g.TranslateTransform(0, 96); $g.RotateTransform([float](360 * $prog * $P.dir)); $g.ScaleTransform(0.68, 0.68); $g.TranslateTransform(0, -96) }   # 缩小一点才不会滚出窗口
+        'stretch' {                            # 前面趴低, 屁股翘高
+            $ph = [Math]::Sin([Math]::PI * $prog); $px = -30 * $P.dir
+            $g.TranslateTransform($px, 130); $g.RotateTransform([float](18 * $ph * $P.dir)); $g.ScaleTransform([float](1 + 0.08 * $ph), 1); $g.TranslateTransform(-$px, -130)
+        }
+        'binky' {                              # 跳很高, 在空中扭一下
+            $ph = [Math]::Sin([Math]::PI * $prog)
+            $g.TranslateTransform(0, (-22 * $ph)); $g.TranslateTransform(0, 100); $g.RotateTransform([float](18 * [Math]::Sin(2 * [Math]::PI * $prog))); $g.TranslateTransform(0, -100)
+        }
+        'tail' { $g.TranslateTransform(0, (-4 * [Math]::Abs([Math]::Sin($P.frame * 0.45)))) }
+    }
+}
+
+# ---------- 两只一起玩: 打招呼 (走过去嗅嗅) 或 玩追追 (轮流抓) ----------
+function Find-Pal($P) {
+    $c = @($Pets | Where-Object { -not [object]::ReferenceEquals($_, $P) -and $_.kind -ne 'fish' -and $_.kind -ne 'mouse' -and (Pet-Free $_) -and ($_.mode -eq 'walk' -or $_.mode -eq 'idle') -and $_.energy -gt 30 -and $_.hunger -ge 40 -and -not $_.hover })
+    if ($c.Count) { $c[$rand.Next($c.Count)] } else { $null }
+}
+function Start-Friend($A, $B) {
+    $kind = if ($rand.Next(2) -eq 0) { 'tag' } else { 'sniff' }
+    $game = @{ kind = $kind; a = $A; b = $B; it = $A; tags = 0; t = 0; cool = 0 }
+    foreach ($p in @($A, $B)) { $p.mode = 'friend'; $p.game = $game; $p.state = 'walk' }
+    if ($kind -eq 'tag') { Say $A "$($B.name)! 来玩追追~"; Say $B '抓不到我~' } else { Say $A "$($B.name)~ 你好呀!" }
+}
+function Friend-Other($P) { if ([object]::ReferenceEquals($P.game.a, $P)) { $P.game.b } else { $P.game.a } }
+function End-Friend($game, $happy) {
+    foreach ($p in @($game.a, $game.b)) {
+        if (-not [object]::ReferenceEquals($p.game, $game)) { continue }
+        $p.game = $null
+        if ($p.mode -eq 'friend') { $p.mode = 'idle'; $p.modeT = 60 }
+        if ($happy) { Add-Love $p 5 }
+    }
+}
+function Update-Friend($P, $wa) {
+    $gm = $P.game
+    if (-not $gm) { $P.mode = 'idle'; return }
+    $o = Friend-Other $P
+    if (-not $Pets.Contains($o) -or $o.form.IsDisposed -or $o.mode -ne 'friend' -or -not [object]::ReferenceEquals($o.game, $gm) -or $o.drag -or $P.energy -lt 15 -or $P.hunger -lt 30) { End-Friend $gm $false; return }
+    if ([object]::ReferenceEquals($gm.a, $P)) { $gm.t++ }
+    if ($gm.t -gt 900) { End-Friend $gm $true; Say $P '玩累了~' ; return }      # 最多玩 36 秒
+    $P.state = 'walk'; $P.energy = [Math]::Max(0, $P.energy - 0.02)
+    $gy = $wa.Bottom - $P.h
+    $P.y += [Math]::Max(-5, [Math]::Min(5, $gy - $P.y))
+    $pc = $P.x + $P.w / 2; $oc = $o.x + $o.w / 2; $dist = [Math]::Abs($oc - $pc)
+    $near = ($P.w + $o.w) / 2 * 0.55
+    if ($gm.kind -eq 'sniff') {
+        if ($dist -gt $near) { $P.dir = [Math]::Sign($oc - $pc); if ($P.dir -eq 0) { $P.dir = 1 }; $P.x += $P.dir * 3; return }   # 走过去
+        foreach ($p in @($P, $o)) { $p.dir = [Math]::Sign((Friend-Other $p).x - $p.x); if ($p.dir -eq 0) { $p.dir = 1 }; $p.patT = 60 }   # 面对面, 开心一下
+        Say $P '嗅嗅~ 好朋友!'; Say $o '嘿嘿~'
+        End-Friend $gm $true; return
+    }
+    if ([object]::ReferenceEquals($gm.it, $P)) {          # 我是抓人的
+        if ($gm.cool -gt 0) { $gm.cool--; $P.state = 'idle'; return }   # 刚换人: 数 1 秒再追
+        $P.dir = [Math]::Sign($oc - $pc); if ($P.dir -eq 0) { $P.dir = 1 }
+        $P.x += $P.dir * 4.2
+        if ($dist -lt $near) {
+            $gm.tags++; $gm.it = $o; $gm.cool = 25
+            Say $P '抓到你了!'; Say $o '换我抓你!'
+            if ($gm.tags -ge 4) { Say $P '好好玩~'; Say $o '再玩一次~'; End-Friend $gm $true; return }
+        }
+    } else {                                              # 我在跑
+        $P.dir = [Math]::Sign($pc - $oc); if ($P.dir -eq 0) { $P.dir = 1 }
+        $P.x += $P.dir * $(if ($gm.cool -gt 0) { 4.5 } else { 3.4 })
+    }
+    if ($P.x -le $wa.Left) { $P.x = $wa.Left } elseif ($P.x + $P.w -ge $wa.Right) { $P.x = $wa.Right - $P.w }   # 跑到墙角就会被抓到
+}
+
+# ---------- 蝴蝶: 偶尔飞过屏幕, 附近的宠物会跳起来抓 ----------
+$Fly = @{ form = $null; on = $false; x = 0.0; y = 0.0; dir = 1; t = 0; next = 1500 + $rand.Next(2500); base = 0.0; col = 0; flee = 0 }
+$FlyColors = @(@(250, 170, 60), @(120, 180, 250), @(245, 130, 185), @(170, 120, 230), @(250, 215, 70))
+$penFly = New-Object Drawing.Pen(([Drawing.Color]::FromArgb(255, 70, 50, 40)), 1.2)
+function Draw-Butterfly($g) {
+    $g.SmoothingMode = 'AntiAlias'
+    $c = $FlyColors[$Fly.col]
+    $br = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(255, $c[0], $c[1], $c[2]))
+    $k = 0.3 + 0.7 * [Math]::Abs([Math]::Cos($Fly.t * 0.5))        # 翅膀拍
+    $g.TranslateTransform(17, 15); $g.ScaleTransform([float]$Fly.dir, 1)
+    foreach ($sd in @(-1, 1)) {
+        $ux = if ($sd -lt 0) { -13 * $k } else { 0 }; $lx = if ($sd -lt 0) { -10 * $k } else { 0 }
+        $g.FillEllipse($br, (F $ux), (F -12), (F (13 * $k)), (F 13)); $g.DrawEllipse($penFly, (F $ux), (F -12), (F (13 * $k)), (F 13))
+        $g.FillEllipse($br, (F $lx), (F 0), (F (10 * $k)), (F 10)); $g.DrawEllipse($penFly, (F $lx), (F 0), (F (10 * $k)), (F 10))
+        $g.FillEllipse($brWhite, (F ($sd * 6.5 * $k - 1.5)), (F -7), (F 3), (F 3))
+    }
+    $g.FillEllipse($brDark, (F -1.5), (F -8), (F 3), (F 17))
+    $g.DrawLine($penFly, (F 0), (F -8), (F 4), (F -14)); $g.DrawLine($penFly, (F 0), (F -8), (F -1), (F -15))
+    $br.Dispose()
+}
+function Update-Fly {
+    $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    if (-not $Fly.on) {
+        if ($Clock.tick -lt $Fly.next) { return }
+        $Fly.dir = if ($rand.Next(2) -eq 0) { 1 } else { -1 }                  # 从左边或右边飞进来
+        $Fly.x = if ($Fly.dir -gt 0) { $wa.Left - 30 } else { $wa.Right + 30 }
+        $Fly.base = $wa.Bottom - $rand.Next(60, 220); $Fly.y = $Fly.base
+        $Fly.col = $rand.Next($FlyColors.Count); $Fly.t = 0; $Fly.flee = 0; $Fly.on = $true
+        if ($Live) { $Fly.form.Show() }
+    }
+    $Fly.t++
+    if ($Fly.flee -gt 0) { $Fly.y -= 5; $Fly.x += $Fly.dir * 3 }               # 被碰到: 往上飞走
+    else {
+        $Fly.x += $Fly.dir * 1.6
+        if ($Fly.t % 150 -eq 0) { $Fly.base = $wa.Bottom - $rand.Next(50, 230) }    # 一下高一下低
+        $target = $Fly.base + [Math]::Sin($Fly.t * 0.06) * 25 + [Math]::Sin($Fly.t * 0.23) * 6
+        $Fly.y += ($target - $Fly.y) * 0.08
+    }
+    if ($Fly.x -lt $wa.Left - 60 -or $Fly.x -gt $wa.Right + 60 -or $Fly.y -lt $wa.Top - 40) {   # 飞出屏幕: 2-5 分钟后再来
+        $Fly.on = $false; $Fly.next = $Clock.tick + 3000 + $rand.Next(4500)
+        if ($Live) { $Fly.form.Hide() }
+        return
+    }
+    $Fly.form.Location = New-Object Drawing.Point(([int]$Fly.x - 17), ([int]$Fly.y - 15))
+    $Fly.form.Invalidate()
+}
+function Fly-Chasers { @($Pets | Where-Object { $_.mode -eq 'fly' }).Count }
+function Update-FlyChase($P, $wa) {
+    $gy = $wa.Bottom - $P.h
+    if (-not $Fly.on -or $Fly.flee -gt 0 -or $P.chaseT -le 0 -or $P.energy -le 10) {
+        if ($Fly.flee -gt 0 -and $P.msgT -eq 0) { Say $P '飞走了~' }
+        $P.jumpT = 0; Land $P; return
+    }
+    $P.chaseT--; $P.energy = [Math]::Max(0, $P.energy - 0.03); $P.state = 'walk'
+    $cx = $P.x + $P.w / 2
+    if ([Math]::Abs($Fly.x - $cx) -gt 8) { $P.dir = [Math]::Sign($Fly.x - $cx) }
+    $dx = $Fly.x - ($cx + $P.dir * $P.sc * 30)
+    if ($P.jumpT -gt 0) {                                    # 跳在空中
+        $P.jumpT--
+        $P.y = $gy - [Math]::Sin([Math]::PI * (1 - $P.jumpT / 22.0)) * 70
+        $P.x += [Math]::Max(-4, [Math]::Min(4, $dx))
+        $my = $P.y + $YOFF + $P.sc * 86                       # 嘴巴的高度
+        if ([Math]::Abs($dx) -lt 22 -and [Math]::Abs($Fly.y - $my) -lt 22) {
+            $Fly.flee = 1; Say $P '抓到了! …又飞走了~' 80; Add-Love $P 5
+            $P.jumpT = 0; Land $P
+        }
+        return
+    }
+    $P.y += [Math]::Max(-6, [Math]::Min(6, $gy - $P.y))
+    $P.x += [Math]::Max(-4.5, [Math]::Min(4.5, $dx))
+    $P.x = [Math]::Min([Math]::Max($P.x, $wa.Left), $wa.Right - $P.w)
+    if ([Math]::Abs($dx) -lt 30 -and $Fly.y -gt $wa.Bottom - 190 -and [Math]::Abs($gy - $P.y) -lt 4) { $P.jumpT = 22 }   # 够近、飞得够低: 跳!
+}
+
 # ---------- 球: 点一下踢飞, 或拖着甩出去; 狗会追 ----------
 $brBall = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(255, 235, 80, 80))
 $Ball = @{ x = 0.0; y = 0.0; vx = 0.0; vy = 0.0; r = 12; spin = 0.0; drag = $false; moved = 0; lastX = 0; lastY = 0; tvx = 0.0; tvy = 0.0; form = $null }
@@ -1015,12 +1201,14 @@ function Update-BallChase($P, $wa) {
     $P.x = [Math]::Min([Math]::Max($P.x, $wa.Left), $wa.Right - $P.w)
     $near = ([Math]::Abs($dx) -lt 14) -and ($Ball.y -gt $wa.Bottom - 50) -and ([Math]::Abs($dy) -lt 6)
     if ($near -and -not $Ball.drag) {
-        if ($P.kicks -lt 3 -and $P.energy -gt 10) {
-            Kick-Ball ($P.dir * $rand.Next(6, 12)) (-$rand.Next(5, 10)); $P.kicks++; Say $P '汪!' 20
+        if ($P.kicks -lt $(if ($P.kind -eq 'cat') { 2 } else { 3 }) -and $P.energy -gt 10) {
+            if ($P.kind -eq 'cat') { Kick-Ball ($P.dir * $rand.Next(3, 7)) (-$rand.Next(3, 6)); Say $P '喵!' 20 }   # 猫用爪子拍, 拍得比较轻
+            else { Kick-Ball ($P.dir * $rand.Next(6, 12)) (-$rand.Next(5, 10)); Say $P '汪!' 20 }
+            $P.kicks++
         } else {
             Add-Love $P 5
             $P.ballRest = $Clock.tick + 250                      # 玩完一轮休息 10 秒
-            $P.mode = 'idle'; $P.modeT = 80; Say $P '汪~ 好好玩!'
+            $P.mode = 'idle'; $P.modeT = 80; Say $P $(if ($P.kind -eq 'cat') { '喵~ 好玩!' } else { '汪~ 好好玩!' })
         }
     } elseif ($P.chaseT -le 0 -or $P.energy -le 5) { $P.ballRest = $Clock.tick + 250; $P.mode = 'idle'; $P.modeT = 60; Say $P '累了… 不追了' }
 }
@@ -1099,7 +1287,7 @@ function Add-Task($type, $pt, $folder) {
 }
 
 function Pet-Free($P) {
-    (-not $P.drag) -and (-not $P.stay) -and (-not $P.task) -and ($P.eatT -le 0) -and ($P.drinkT -le 0) -and ($P.patT -le 0) -and ($P.mode -ne 'sleep') -and ($P.mode -ne 'atFeeder') -and ($P.mode -ne 'goto') -and ($P.mode -ne 'chase') -and ($P.mode -ne 'ball') -and ($P.kind -ne 'fish') -and ($P.kind -ne 'mouse')
+    (-not $P.drag) -and (-not $P.stay) -and (-not $P.task) -and ($P.eatT -le 0) -and ($P.drinkT -le 0) -and ($P.patT -le 0) -and ($P.mode -ne 'sleep') -and ($P.mode -ne 'atFeeder') -and ($P.mode -ne 'goto') -and ($P.mode -ne 'chase') -and ($P.mode -ne 'ball') -and ($P.mode -ne 'trick') -and ($P.mode -ne 'friend') -and ($P.mode -ne 'fly') -and ($P.kind -ne 'fish') -and ($P.kind -ne 'mouse')
 }
 
 # 派离得最近、有空的宠物过去
@@ -2003,6 +2191,7 @@ function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $pho
         fleeT = 0; chaser = $null; swim = $null                  # 鱼: 逃跑 / 要游去哪里
         hover = $false                                           # 滑鼠指着它
         mouseRest = 0                                            # 追完老鼠休息一下
+        trick = ''; trickT = 0; trickLen = 1; game = $null; jumpT = 0   # 自己玩的把戏 / 跟朋友玩 / 跳起来抓蝴蝶
         chat = $null; visitor = $false; visitorUntil = 0         # 头上的对话框 / 是不是朋友的宠物来串门
         love = [Math]::Max(5, [int]$love); playSec = [int]$playSec      # 亲密度 0-100, 陪伴秒数
         photoFile = $(if ($P.photo) { [string]$photoFile } else { '' })   # 照片文件名 (在 photos 文件夹)
@@ -2311,6 +2500,11 @@ $Ball.form.add_MouseUp({ param($src, $e)
 })
 Place-Ball
 
+# 蝴蝶的小窗口 (平常藏起来)
+$Fly.form = New-PetWindow 34 30
+$Fly.form.Owner = $bed
+$Fly.form.add_Paint({ param($src, $e) Draw-Butterfly $e.Graphics })
+
 # ---------- 便条: 放在右边, 拉边框可以调大小, 写的东西自动存 ----------
 $NoteFile = Join-Path $PSScriptRoot 'note.json'
 $NoteState = @{ dirty = $false }
@@ -2597,7 +2791,7 @@ function Show-Pair {
 }
 
 # ---------- 自动更新: 从 GitHub 拿新版本, 签名对得上才装 (只有 exe 装的才会更新) ----------
-$AppVersion = 5
+$AppVersion = 6
 $UpdateUrl = 'https://raw.githubusercontent.com/Huiyung99/Laptop-Pet/main/update/'
 $UpdatePubKey = '<RSAKeyValue><Modulus>m43v3YuEWypkH3H1iwF1Rpq0HXVYexJsmpTLMkqTZ+hww+h67OiiaNd8pFFEOGg+TZ1qwLloQW3F/d8wT80XWcx/77qGAfMHjiT2M40jv5kF4fCo9K+AEI9qJvBpGcGW+IukbdHKdi4roQmHiTqF+ShI1U8UueKNzvgGQIsj+eWlZY5jsyKKfz9QTX8pYQEYF8IMUxvMoYSgvNXZLaT4AO0rmYGWlCmn54bW7gZpHLz71PGKeGPAfm8YqbkStyXCFdSE7gP1pthYSZ6CuFF0ev4fXB84nYMNHSq37vcYm5y5gOmW40cszDYHubDbEm1+xsfJKHwy1eqhjL4Xb4VD0h0EnU44U7TQfKyFKJvC5Dj1PfLbMomASjdCPMucFTEwp/UqTI0niuMamv8Y/GbPg+jQm+vGvApN9FZD3b8rnEZyHe9iW0uQJ0pb1lJK80Yrls6JlzF0Cqq+fa7w9U2S21byal0Sr/VUzPVnKdtKx1Prc2X0thLlP73LWHHe2rSh</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LaptopPet'
@@ -2685,6 +2879,7 @@ $timer.add_Tick({
     if ($Clock.tick % 25 -eq 13) { Poll-Desktop }
     if ($Clock.tick % 25 -eq 7) { Check-AutoRefill }    # 喂食器空了 15 分钟主人都没加, 就自己加满       # 每秒看一次桌面
     Update-Ball
+    Update-Fly
     Assign-Tasks
     if ($Clock.tick -ge $Chat.nextShow) {                    # 朋友的消息一条一条来 (至少隔 2.4 秒)
         $raw = $null
