@@ -127,7 +127,7 @@ $BW = 100; $BH = 44            # 窝窗口
 $KEY = [Drawing.Color]::FromArgb(255, 1, 2, 3)   # 透明色
 $DataFile = Join-Path $PSScriptRoot 'pets.json'
 
-$Kinds = [ordered]@{ cat = '猫'; dog = '狗'; rabbit = '兔子'; fish = '鱼' }
+$Kinds = [ordered]@{ cat = '猫'; dog = '狗'; rabbit = '兔子'; fish = '鱼'; mouse = '老鼠' }
 $Breeds = [ordered]@{ mixed = '土狗'; shiba = '柴犬'; corgi = '柯基'; husky = '哈士奇'; teddy = '泰迪'; pug = '哈巴狗'; dachshund = '腊肠'; golden = '金毛' }
 $BreedColor = @{ mixed = '棕色'; shiba = '橘色'; corgi = '橘色'; husky = '灰色'; teddy = '棕色'; pug = '奶油色'; dachshund = '棕色'; golden = '金色' }   # 选品种时默认颜色
 $BreedSize = @{ mixed = '中'; shiba = '中'; corgi = '中'; husky = '大'; teddy = '小'; pug = '小'; dachshund = '小'; golden = '大' }
@@ -138,7 +138,7 @@ $Colors = [ordered]@{
 }
 
 $Pets = New-Object System.Collections.ArrayList
-$Bowl = @{ food = 100; water = 100 }
+$Bowl = @{ food = 100; water = 100; emptyAt = 0 }      # emptyAt: 什么时候开始空的 (空了 15 分钟就自己加满)
 $Clock = @{ tick = 0 }
 $rand = New-Object Random
 
@@ -228,6 +228,12 @@ function Draw-Pet($P, [Drawing.Graphics]$g) {
         Draw-Fish $P $g $f $st
         $g.Restore($outer)
         if ($P.msgT -gt 0) { Label $g $P.msg ($P.w / 2) 30 } else { Label $g $P.name ($P.w / 2) 30 }
+        return
+    }
+    if ($kind -eq 'mouse') {
+        Draw-Mouse $P $g $f $st
+        $g.Restore($outer)
+        if ($P.msgT -gt 0) { Label $g $P.msg ($P.w / 2) 18 } else { Label $g $P.name ($P.w / 2) 18 }
         return
     }
 
@@ -383,9 +389,21 @@ function Draw-Pet($P, [Drawing.Graphics]$g) {
         }
     }
 
+    # 饿了 (还没在吃): 可怜的脸 - 水汪汪大眼睛、八字眉、掉眼泪、嘴巴往下
+    $sad = ($null -ne $P.hunger) -and ($P.hunger -lt 40) -and (@('idle', 'walk', 'starve') -contains $st)
+
     # 眼睛
     foreach ($ex in @(20, 37)) {
         $ey = 72
+        if ($sad) {
+            $side = if ($ex -lt 28) { 1 } else { -1 }                                       # 眉毛靠中间那头翘高
+            $g.DrawLine($penOut, (F ($ex - 6 * $side)), (F ($ey - 8)), (F ($ex + 3 * $side)), (F ($ey - 11)))
+            $g.FillEllipse($brDark, (F ($ex - 4)), (F ($ey - 5)), (F 8), (F 10))
+            $g.FillEllipse($brWhite, (F ($ex - 2.5)), (F ($ey - 4)), (F 3.5), (F 3.5))       # 水汪汪的亮点
+            $g.FillEllipse($brWhite, (F ($ex + 1)), (F ($ey + 1)), (F 2), (F 2))
+            if ($side -eq 1 -and ($f % 60) -lt 40) { $g.FillEllipse($brBlue, (F ($ex - 5)), (F ($ey + 5 + ($f % 60) * 0.25)), (F 3.5), (F 5)) }   # 眼泪
+            continue
+        }
         switch ($st) {
             'drag' {
                 Blob $g $brWhite ($ex - 5) ($ey - 5) 10 10
@@ -425,6 +443,8 @@ function Draw-Pet($P, [Drawing.Graphics]$g) {
     } elseif ($st -eq 'drink') {
         $th = if (($f % 8) -lt 4) { 8 } else { 4 }
         $g.FillEllipse($brPink, (F 25), (F 84), (F 7), (F $th))
+    } elseif ($sad) {                     # 嘴巴往下
+        $g.DrawArc($penOut, (F 24), (F 86), (F 9), (F 6), (F 180), (F 180))
     } elseif ($breed -eq 'golden') {      # 鼻子下面一条短线 + 小嘴
         $g.DrawLine($penOut, (F 28), (F 85), (F 28), (F 88))
         $g.DrawLine($penOut, (F 25), (F 89), (F 31), (F 89))
@@ -499,11 +519,13 @@ function Draw-Bed([Drawing.Graphics]$g) {
 }
 
 # ---------- 行为 ----------
+# 亲密度: 最低 5, 最高 100. 每玩一次 (摸摸 / 玩球 / 追老鼠追鱼) +5
+function Add-Love($P, $n) { $P.love = [Math]::Min(100, [Math]::Max(5, $P.love + $n)) }
 function Pat($P) {
     if ($P.patT -gt 0) { return }
-    $P.love = [Math]::Min(100, $P.love + 1)
+    Add-Love $P 5
     $P.patT = 50
-    $sound = switch ($P.kind) { 'dog' { '汪~ 好舒服' } 'rabbit' { '嘿嘿~' } 'fish' { '咕噜咕噜~' } default { '呼噜呼噜~' } }
+    $sound = switch ($P.kind) { 'dog' { '汪~ 好舒服' } 'rabbit' { '嘿嘿~' } 'fish' { '咕噜咕噜~' } 'mouse' { '吱吱~' } default { '呼噜呼噜~' } }
     Say $P $sound 50
 }
 # 滑鼠在宠物身上左右来回滑 (不按键): 换方向 4 次 (来回约两趟) 就算摸一次. 停超过 1 秒重新算
@@ -533,9 +555,23 @@ function Snack($P) {
     Say $P '零食好好吃!' 50
 }
 function Refill {
-    $Bowl.food = 100; $Bowl.water = 100
+    $Bowl.food = 100; $Bowl.water = 100; $Bowl.emptyAt = 0
     $feeder.Invalidate()
     foreach ($P in @($Pets)) { if ($P.hunger -lt 40) { Say $P '有饭吃啦!' } }
+}
+$AutoRefillTicks = 15 * 60 * 25                 # 15 分钟
+function Check-AutoRefill {
+    if ($Bowl.food -gt 0 -and $Bowl.water -gt 0) { $Bowl.emptyAt = 0; return }
+    if ($Bowl.emptyAt -eq 0) { $Bowl.emptyAt = $Clock.tick; return }
+    if ($Clock.tick - $Bowl.emptyAt -lt $AutoRefillTicks) { return }
+    Refill
+    $P = @($Pets | Where-Object { -not $_.visitor -and $_.kind -ne 'fish' -and $_.kind -ne 'mouse' })[0]
+    if ($P) { Say $P '喂食器自己加满啦~' 100 }
+}
+function AutoRefill-Text {                     # 喂食器右键菜单显示还要等多久
+    if ($Bowl.emptyAt -eq 0) { return '' }
+    $left = [Math]::Max(0, [Math]::Ceiling(($AutoRefillTicks - ($Clock.tick - $Bowl.emptyAt)) / 1500.0))
+    "$left 分钟后自动加满"
 }
 function GoSleep($P) { $P.energy = [Math]::Min($P.energy, 19) }
 
@@ -568,6 +604,7 @@ function Arrive($P) {
 function Update-Pet($P) {
     $wa = [Windows.Forms.Screen]::FromControl($P.form).WorkingArea
     if ($P.kind -eq 'fish') { Update-Fish $P $wa; return }
+    if ($P.kind -eq 'mouse') { Update-Mouse $P $wa; return }
     if ($P.drag) { $P.state = 'drag'; return }
     if ($P.patT -gt 0) { $P.patT--; $P.state = 'pat'; return }      # 被摸摸时停下来享受
     if ($P.taskT -gt 0) {                                          # 在拉便便 / 在吃桌面上被删掉的东西
@@ -618,7 +655,7 @@ function Update-Pet($P) {
     # 饿了去吃饭, 困了去睡觉
     if (-not $P.stay -and $P.mode -ne 'goto') {
         if ($P.hunger -lt 40 -and $Bowl.food -gt 0 -and -not (Feeder-Busy $P)) {
-            Go-To $P ($feeder.Left + 28 - $P.w / 2 - $P.sc * $P.mouthX) ($feeder.Bottom - $YOFF - $P.sc * 132 + 1) 'eat'; Say $P '去吃饭~'
+            Go-To $P ($feeder.Left + 28 - $P.w / 2 - $P.sc * $P.mouthX) ($feeder.Bottom - $YOFF - $P.sc * 132 + 1) 'eat'; Say $P '饿了… 去吃饭~'
         } elseif ($P.kind -eq 'cat' -and $P.hunger -lt 40 -and $Bowl.food -le 0 -and @(Fish-List).Count -gt 0) {
             Start-Chase $P (Nearest-Fish $P) $true 500; Say $P '没饭了… 抓鱼吃!'          # 喂食器空了才吃鱼
         } elseif ($P.energy -lt 20) {
@@ -663,6 +700,11 @@ function Update-Pet($P) {
     if ($P.kind -eq 'cat' -and $P.energy -gt 60 -and $rand.Next(700) -eq 0 -and @(Fish-List).Count -gt 0) {
         Start-Chase $P (Nearest-Fish $P) $false 300; Say $P '鱼! 抓抓~'; return
     }
+    # 猫和狗有精力时偶尔去追老鼠玩
+    if (($P.kind -eq 'cat' -or $P.kind -eq 'dog') -and $P.energy -gt 50 -and $Clock.tick -gt $P.mouseRest -and $rand.Next(600) -eq 0) {
+        $mm = Nearest-Mouse $P
+        if ($mm) { Start-Chase $P $mm $false 400; Say $P '老鼠! 别跑~'; Say $mm '吱! 救命!'; return }
+    }
     $P.state = $P.mode
     if ($P.mode -eq 'walk') {
         $speed = if ($P.hunger -lt 30) { 1 } else { 3 }
@@ -671,7 +713,10 @@ function Update-Pet($P) {
         if ($P.x + $P.w -ge $wa.Right) { $P.x = $wa.Right - $P.w; $P.dir = -1 }
     }
     # 饿了但喂食器空了: 每 10 秒提醒主人
-    if ($P.hunger -lt 40 -and $Bowl.food -le 0 -and $P.msgT -eq 0 -and $Clock.tick % 250 -eq 0) { Say $P '喂食器空了! 快加饭~' 100 }
+    if ($P.hunger -lt 40 -and $Bowl.food -le 0 -and $P.msgT -eq 0 -and $Clock.tick % 250 -eq 0) {
+        $HungryLines = @('我饿了… 呜呜', '喂食器空了! 快加饭~', '肚子咕咕叫…', '主人… 我好饿')
+        Say $P $HungryLines[[int]($Clock.tick / 250) % $HungryLines.Count] 100
+    }
 }
 
 function Clamp-ToScreen($P) {
@@ -685,7 +730,10 @@ function Doing($P) {
     if ($P.kind -eq 'fish') {
         if ($P.state -eq 'pat') { return '被你摸摸' } elseif ($P.state -eq 'drag') { return '被你抓着' } elseif ($P.fleeT -gt 0) { return '逃命!' } else { return '游来游去' }
     }
-    if ($P.state -eq 'walk' -and $P.mode -eq 'chase') { return $(if ($P.chaseEat) { '抓鱼吃' } else { '追鱼玩' }) }
+    if ($P.kind -eq 'mouse') {
+        if ($P.state -eq 'pat') { return '被你摸摸' } elseif ($P.state -eq 'drag') { return '被你抓着' } elseif ($P.fleeT -gt 0) { return '逃命!' } elseif ($P.state -eq 'walk') { return '到处跑' } else { return '发呆' }
+    }
+    if ($P.state -eq 'walk' -and $P.mode -eq 'chase') { return $(if ($P.prey.kind -eq 'mouse') { '追老鼠玩' } elseif ($P.chaseEat) { '抓鱼吃' } else { '追鱼玩' }) }
     if ($P.state -eq 'walk' -and $P.mode -eq 'ball') { return '追球' }
     switch ($P.state) {
         'sleep' { '睡觉' }
@@ -778,9 +826,10 @@ function End-Chase($P) { $P.prey = $null; Land $P }
 function Update-Chase($P) {
     $fish = $P.prey
     if (-not $fish -or -not $Pets.Contains($fish) -or $P.chaseT -le 0) {
-        if ($P.chaseT -le 0) { Say $P '游太快了… 不追了' }
+        if ($P.chaseT -le 0) { Say $P $(if ($fish.kind -eq 'mouse') { '跑太快了… 不追了' } else { '游太快了… 不追了' }); if ($fish.kind -eq 'mouse') { $P.mouseRest = $Clock.tick + 500 } }
         End-Chase $P; return
     }
+    if ($fish.kind -eq 'mouse') { Update-MouseChase $P $fish; return }     # 老鼠在地上追
     $P.chaseT--; $P.energy = [Math]::Max(0, $P.energy - 0.04); $P.state = 'walk'
     $fc = Fish-Center $fish
     $cx = $P.x + $P.w / 2
@@ -802,7 +851,7 @@ function Catch-Fish($P, $fish) {
         $fish.form.Close()
         Save-Pets
     } else {                                     # 玩: 抓到就放走
-        Say $P '抓到了! 放你走~'; Say $fish '吓死我了!'
+        Say $P '抓到了! 放你走~'; Say $fish '吓死我了!'; Add-Love $P 5
         $fish.fleeT = 50; $fish.chaser = $P
         End-Chase $P
     }
@@ -818,6 +867,100 @@ function Call-Cat($fish) {
     }
     if ($best) { Start-Chase $best $fish $false 400; Say $best '鱼! 我来了!'; Say $fish '救命啊~' }
     else { Say $fish '没有猫有空~' }
+}
+
+# ---------- 老鼠: 在地上跑来跑去; 猫和狗有精力时会追着玩 (只是玩, 不会吃) ----------
+$penMouseTail = New-Object Drawing.Pen(([Drawing.Color]::FromArgb(255, 240, 160, 175)), 3); $penMouseTail.StartCap = 'Round'; $penMouseTail.EndCap = 'Round'
+$penMouseTailO = New-Object Drawing.Pen(([Drawing.Color]::FromArgb(255, 70, 50, 40)), 6); $penMouseTailO.StartCap = 'Round'; $penMouseTailO.EndCap = 'Round'
+$penWhisker = New-Object Drawing.Pen(([Drawing.Color]::FromArgb(255, 70, 50, 40)), 1.2)
+function Draw-Mouse($P, $g, $f, $st) {
+    $run = ($st -eq 'walk')
+    $sw = if ($run) { [Math]::Sin($f * 0.9) * 4 } else { 0 }
+    $tw = [Math]::Sin($f * 0.3) * 5
+    $tail = Pts @(-28, 118, -46, (112 + $tw), -60, 122, -74, (114 - $tw))      # 长尾巴
+    $g.DrawCurve($penMouseTailO, $tail); $g.DrawCurve($penMouseTail, $tail)
+    Blob $g $brPink (-20 + $sw) 123 12 9; Blob $g $brPink (12 - $sw) 123 12 9      # 小脚
+    Blob $g $P.brBody 6 68 28 28; Blob $g $P.brBody 26 64 28 28                    # 大圆耳朵
+    $g.FillEllipse($brPink, (F 12), (F 74), (F 16), (F 16)); $g.FillEllipse($brPink, (F 32), (F 70), (F 16), (F 16))
+    Blob $g $P.brBody -32 94 64 34                                                  # 身体
+    Blob $g $P.brBody 14 86 46 32                                                   # 头
+    $g.FillEllipse($brPink, (F 55), (F 98), (F 9), (F 8)); $g.DrawEllipse($penOut, (F 55), (F 98), (F 9), (F 8))   # 鼻子
+    if ($st -eq 'pat') { $g.DrawLines($penOut, (Pts @(37, 99, 41, 95, 45, 99))) }
+    elseif ($st -eq 'drag' -or $P.fleeT -gt 0) { Blob $g $brWhite 36 92 10 10; $g.FillEllipse($brDark, (F 39), (F 95), (F 4), (F 4)) }   # 吓到眼睛变大
+    else { $g.FillEllipse($brDark, (F 38), (F 94), (F 6), (F 7)) }
+    $g.FillEllipse($brPink, (F 30), (F 106), (F 8), (F 5))                         # 腮红
+    $g.DrawLine($penWhisker, (F 54), (F 106), (F 70), (F 101)); $g.DrawLine($penWhisker, (F 54), (F 109), (F 70), (F 111))   # 胡子
+    if ($st -eq 'pat') { Heart $g 10 (64 - (50 - $P.patT) * 0.2) 6 }
+}
+function Update-Mouse($P, $wa) {
+    if ($P.drag) { $P.state = 'drag'; return }
+    if ($P.patT -gt 0) { $P.patT--; $P.state = 'pat'; return }
+    if ($P.hover) { $P.state = 'idle'; return }                 # 被滑鼠指着: 停下来不动
+    $gy = $wa.Bottom - $P.h
+    $P.y += [Math]::Max(-6, [Math]::Min(6, $gy - $P.y))          # 被拖到上面放下: 跑回地上
+    if ($P.fleeT -gt 0) {                                        # 被追: 往反方向跑
+        $P.fleeT--; $P.state = 'walk'
+        $c = $P.chaser
+        if ($c -and $Pets.Contains($c)) { $away = [Math]::Sign(($P.x + $P.w / 2) - ($c.x + $c.w / 2)); if ($away -ne 0) { $P.dir = $away } }
+        $P.x += $P.dir * 4.5
+        $P.x = [Math]::Min([Math]::Max($P.x, $wa.Left), $wa.Right - $P.w)   # 跑到墙角就被抓到了
+        return
+    }
+    if ($P.stay) { $P.state = 'idle'; return }
+    $P.modeT--
+    if ($P.modeT -le 0) {                                        # 一下跑一下停
+        if ($rand.NextDouble() -lt 0.6) { $P.mode = 'walk'; if ($rand.NextDouble() -lt 0.5) { $P.dir = -$P.dir } } else { $P.mode = 'idle' }
+        $P.modeT = $rand.Next(30, 120)
+    }
+    $P.state = $P.mode
+    if ($P.mode -eq 'walk') {
+        $P.x += $P.dir * 3.5
+        if ($P.x -le $wa.Left) { $P.x = $wa.Left; $P.dir = 1 }
+        if ($P.x + $P.w -ge $wa.Right) { $P.x = $wa.Right - $P.w; $P.dir = -1 }
+    }
+}
+function Mouse-List { @($Pets | Where-Object { $_.kind -eq 'mouse' }) }
+function Nearest-Mouse($P) {                    # 最近的、还没被追的老鼠
+    $best = $null; $bestD = [double]::MaxValue
+    foreach ($m in (Mouse-List)) {
+        if (@($Pets | Where-Object { $_.mode -eq 'chase' -and [object]::ReferenceEquals($_.prey, $m) }).Count) { continue }
+        $d = [Math]::Abs($m.x - $P.x)
+        if ($d -lt $bestD) { $best = $m; $bestD = $d }
+    }
+    $best
+}
+# 在地上追老鼠: 只左右跑, 嘴巴碰到老鼠就算抓到
+function Update-MouseChase($P, $m) {
+    $P.chaseT--; $P.energy = [Math]::Max(0, $P.energy - 0.04); $P.state = 'walk'
+    $wa = [Windows.Forms.Screen]::FromControl($P.form).WorkingArea
+    $mc = $m.x + $m.w / 2; $cx = $P.x + $P.w / 2
+    if ([Math]::Abs($mc - $cx) -gt 10) { $P.dir = [Math]::Sign($mc - $cx) }
+    $dx = $mc - ($cx + $P.dir * $P.sc * 30)
+    $gy = $wa.Bottom - $P.h
+    $P.y += [Math]::Max(-5, [Math]::Min(5, $gy - $P.y))
+    if ([Math]::Abs($dx) -lt 12 -and [Math]::Abs($gy - $P.y) -lt 6) { Catch-Mouse $P $m; return }
+    $sp = if ($P.kind -eq 'cat') { 5.5 } else { 5 }
+    $P.x += [Math]::Max(-$sp, [Math]::Min($sp, $dx))
+    $P.x = [Math]::Min([Math]::Max($P.x, $wa.Left), $wa.Right - $P.w)
+    $m.fleeT = 10; $m.chaser = $P
+}
+function Catch-Mouse($P, $m) {
+    Say $P '抓到了! 放你走~'; Say $m '吱吱! 吓死我了!'
+    $m.fleeT = 60; $m.chaser = $P                 # 放走: 让它先跑
+    Add-Love $P 5
+    $P.mouseRest = $Clock.tick + 500              # 休息 20 秒才再追
+    End-Chase $P
+}
+# 双击老鼠: 叫最近、有空的猫或狗来追它
+function Call-Chaser($m) {
+    $best = $null; $bestD = [double]::MaxValue
+    foreach ($P in @($Pets)) {
+        if (($P.kind -ne 'cat' -and $P.kind -ne 'dog') -or -not (Pet-Free $P)) { continue }
+        $d = [Math]::Abs($P.x - $m.x)
+        if ($d -lt $bestD) { $best = $P; $bestD = $d }
+    }
+    if ($best) { Start-Chase $best $m $false 400; Say $best '老鼠! 别跑~'; Say $m '吱! 救命!' }
+    else { Say $m '没有猫狗有空~' }
 }
 
 # ---------- 球: 点一下踢飞, 或拖着甩出去; 狗会追 ----------
@@ -875,7 +1018,7 @@ function Update-BallChase($P, $wa) {
         if ($P.kicks -lt 3 -and $P.energy -gt 10) {
             Kick-Ball ($P.dir * $rand.Next(6, 12)) (-$rand.Next(5, 10)); $P.kicks++; Say $P '汪!' 20
         } else {
-            $P.love = [Math]::Min(100, $P.love + 1)
+            Add-Love $P 5
             $P.ballRest = $Clock.tick + 250                      # 玩完一轮休息 10 秒
             $P.mode = 'idle'; $P.modeT = 80; Say $P '汪~ 好好玩!'
         }
@@ -956,7 +1099,7 @@ function Add-Task($type, $pt, $folder) {
 }
 
 function Pet-Free($P) {
-    (-not $P.drag) -and (-not $P.stay) -and (-not $P.task) -and ($P.eatT -le 0) -and ($P.drinkT -le 0) -and ($P.patT -le 0) -and ($P.mode -ne 'sleep') -and ($P.mode -ne 'atFeeder') -and ($P.mode -ne 'goto') -and ($P.mode -ne 'chase') -and ($P.mode -ne 'ball') -and ($P.kind -ne 'fish')
+    (-not $P.drag) -and (-not $P.stay) -and (-not $P.task) -and ($P.eatT -le 0) -and ($P.drinkT -le 0) -and ($P.patT -le 0) -and ($P.mode -ne 'sleep') -and ($P.mode -ne 'atFeeder') -and ($P.mode -ne 'goto') -and ($P.mode -ne 'chase') -and ($P.mode -ne 'ball') -and ($P.kind -ne 'fish') -and ($P.kind -ne 'mouse')
 }
 
 # 派离得最近、有空的宠物过去
@@ -1076,9 +1219,10 @@ function Build-PetMenu($P) {
     [void](Add-MenuItem $m '摸摸' { param($src, $e) Pat $src.Owner.Tag })
     $miSnack = Add-MenuItem $m '喂小零食' { param($src, $e) Snack $src.Owner.Tag }
     $miSleep = Add-MenuItem $m '去睡觉' { param($src, $e) GoSleep $src.Owner.Tag }
-    if ($P.kind -eq 'fish') {      # 鱼不用吃饭睡觉; 双击鱼是叫猫来追
+    if ($P.kind -eq 'fish' -or $P.kind -eq 'mouse') {      # 鱼和老鼠不用吃饭睡觉; 双击它们是叫猫 (狗) 来追
         foreach ($it in @($P.lblHunger, $P.lblEnergy, $miSnack, $miSleep)) { $it.Visible = $false }
-        [void](Add-MenuItem $m '叫猫来追' { param($src, $e) Call-Cat $src.Owner.Tag })
+        if ($P.kind -eq 'fish') { [void](Add-MenuItem $m '叫猫来追' { param($src, $e) Call-Cat $src.Owner.Tag }) }
+        else { [void](Add-MenuItem $m '叫猫狗来追' { param($src, $e) Call-Chaser $src.Owner.Tag }) }
     }
     $stay = Add-MenuItem $m '待着别动' {}
     $stay.CheckOnClick = $true
@@ -1089,8 +1233,7 @@ function Build-PetMenu($P) {
     $miClothes = Add-MenuItem $m '设计衣服 / 头饰…' { param($src, $e) Show-ClothesDialog $src.Owner.Tag }
     $P.miNoClothes = Add-MenuItem $m '脱掉衣服' { param($src, $e) Set-PetClothes $src.Owner.Tag $null }
     $P.miNoHat = Add-MenuItem $m '拿掉头饰' { param($src, $e) Set-PetHat $src.Owner.Tag $null }
-    if ($P.kind -eq 'fish') { $miClothes.Visible = $false }
-    if ($P.kind -eq 'fish') { $miPhoto.Visible = $false }
+    if ($P.kind -eq 'fish' -or $P.kind -eq 'mouse') { $miClothes.Visible = $false; $miPhoto.Visible = $false }
     [void](Add-MenuItem $m '加满喂食器' { Refill })
     [void](Add-MenuItem $m '便条' { Show-Note })
     $P.miTalk = Add-MenuItem $m '说话…' { param($src, $e) Show-Talk $src.Owner.Tag }
@@ -1794,7 +1937,7 @@ function New-PetLook($name, $kind, $breed, $colorName, $photo = $null) {
     $rgb = $Colors[$colorName]
     $body = [Drawing.Color]::FromArgb(255, $rgb[0], $rgb[1], $rgb[2])
     $dk = [Drawing.Color]::FromArgb(255, [int]($rgb[0] * 0.78), [int]($rgb[1] * 0.78), [int]($rgb[2] * 0.78))
-    $scale = if ($kind -eq 'dog') { $SizeScale[$BreedSize[$breed]] } else { $SC }
+    $scale = if ($kind -eq 'dog') { $SizeScale[$BreedSize[$breed]] } elseif ($kind -eq 'mouse') { 0.45 } else { $SC }   # 老鼠小小的
     $P = @{
         name = $name; kind = $kind; breed = $breed; color = $colorName
         sc = $scale; w = [int][Math]::Round($W * $scale / $SC); h = [int][Math]::Ceiling($YOFF + $scale * 134 + 2)
@@ -1805,7 +1948,7 @@ function New-PetLook($name, $kind, $breed, $colorName, $photo = $null) {
         penTail = New-Object Drawing.Pen($body, 7)
         penTailFat = New-Object Drawing.Pen($body, 11)
         penStripe = New-Object Drawing.Pen($dk, 3)
-        photo = $(if ($kind -eq 'fish') { $null } else { $photo })   # 头像照片 (鱼没有)
+        photo = $(if ($kind -eq 'fish' -or $kind -eq 'mouse') { $null } else { $photo })   # 头像照片 (鱼和老鼠没有)
     }
     foreach ($pn in @($P.penTail, $P.penTailFat, $P.penStripe)) { $pn.StartCap = 'Round'; $pn.EndCap = 'Round' }
     $P
@@ -1824,13 +1967,14 @@ function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $pho
         prey = $null; chaseT = 0; chaseEat = $false; kicks = 0; ballRest = 0     # 猫追鱼 / 狗追球
         fleeT = 0; chaser = $null; swim = $null                  # 鱼: 逃跑 / 要游去哪里
         hover = $false                                           # 滑鼠指着它
+        mouseRest = 0                                            # 追完老鼠休息一下
         chat = $null; visitor = $false; visitorUntil = 0         # 头上的对话框 / 是不是朋友的宠物来串门
-        love = [int]$love; playSec = [int]$playSec      # 亲密度 0-100, 陪伴秒数
+        love = [Math]::Max(5, [int]$love); playSec = [int]$playSec      # 亲密度 0-100, 陪伴秒数
         photoFile = $(if ($P.photo) { [string]$photoFile } else { '' })   # 照片文件名 (在 photos 文件夹)
         clothes = $null; clothesFile = ''; hat = $null; hatFile = ''   # 主人画的衣服 / 头饰 (在 clothes 文件夹)
     }
     foreach ($k in $more.Keys) { $P[$k] = $more[$k] }
-    if ($P.kind -ne 'fish') { $P.clothes = Load-Clothes $clothesFile; if ($P.clothes) { $P.clothesFile = [string]$clothesFile }; $P.hat = Load-Clothes $hatFile $HatBox; if ($P.hat) { $P.hatFile = [string]$hatFile } }
+    if ($P.kind -ne 'fish' -and $P.kind -ne 'mouse') { $P.clothes = Load-Clothes $clothesFile; if ($P.clothes) { $P.clothesFile = [string]$clothesFile }; $P.hat = Load-Clothes $hatFile $HatBox; if ($P.hat) { $P.hatFile = [string]$hatFile } }
 
     $fm = New-PetWindow $P.w $P.h
     $fm.Text = $name
@@ -1864,7 +2008,7 @@ function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $pho
         }
     })
     $fm.add_MouseDoubleClick({ param($src, $e)
-        if ($e.Button -eq 'Left') { if ($src.Tag.kind -eq 'fish') { Call-Cat $src.Tag } else { Snack $src.Tag } }   # 双击鱼 = 叫猫来追
+        if ($e.Button -eq 'Left') { if ($src.Tag.kind -eq 'fish') { Call-Cat $src.Tag } elseif ($src.Tag.kind -eq 'mouse') { Call-Chaser $src.Tag } else { Snack $src.Tag } }   # 双击鱼 = 叫猫来追
     })
     $fm.add_FormClosed({ param($src, $e) Requeue-Task $src.Tag; $Pets.Remove($src.Tag) })
     $fm.ContextMenuStrip = Build-PetMenu $P
@@ -1984,7 +2128,8 @@ function Show-AddPetDialog {
         $u.breed.Enabled = $isDog
         if ($isDog) { $u.color.SelectedItem = $BreedColor[@($Breeds.Keys)[$u.breed.SelectedIndex]] }
         if (@($Kinds.Keys)[$src.SelectedIndex] -eq 'fish') { $u.color.SelectedItem = '橘色' }
-        $isFish = (@($Kinds.Keys)[$src.SelectedIndex] -eq 'fish')
+        if (@($Kinds.Keys)[$src.SelectedIndex] -eq 'mouse') { $u.color.SelectedItem = '灰色' }
+        $isFish = (@('fish', 'mouse') -contains @($Kinds.Keys)[$src.SelectedIndex])
         $u.pick.Enabled = -not $isFish; $u.clear.Enabled = (-not $isFish) -and [bool]$u.photo   # 鱼不放照片
         $u.preview.Invalidate()
     })
@@ -2033,6 +2178,7 @@ $feeder.add_FormClosed({ [Windows.Forms.Application]::Exit() })
 $feederMenu = New-Object Windows.Forms.ContextMenuStrip
 $lblFood = Add-MenuLabel $feederMenu $false
 $lblWater = Add-MenuLabel $feederMenu $false
+$lblAuto = Add-MenuLabel $feederMenu $false
 [void]$feederMenu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
 [void](Add-MenuItem $feederMenu '加满饭和水' { Refill })
 [void](Add-MenuItem $feederMenu '便条' { Show-Note })
@@ -2043,6 +2189,7 @@ $lblWater = Add-MenuLabel $feederMenu $false
 $feederMenu.add_Opening({
     $lblFood.Text = '饭  ' + (Meter $Bowl.food)
     $lblWater.Text = '水  ' + (Meter $Bowl.water)
+    $lblAuto.Text = AutoRefill-Text; $lblAuto.Visible = [bool]$lblAuto.Text
 })
 $feeder.ContextMenuStrip = $feederMenu
 
@@ -2415,7 +2562,7 @@ function Show-Pair {
 }
 
 # ---------- 自动更新: 从 GitHub 拿新版本, 签名对得上才装 (只有 exe 装的才会更新) ----------
-$AppVersion = 3
+$AppVersion = 4
 $UpdateUrl = 'https://raw.githubusercontent.com/Huiyung99/Laptop-Pet/main/update/'
 $UpdatePubKey = '<RSAKeyValue><Modulus>m43v3YuEWypkH3H1iwF1Rpq0HXVYexJsmpTLMkqTZ+hww+h67OiiaNd8pFFEOGg+TZ1qwLloQW3F/d8wT80XWcx/77qGAfMHjiT2M40jv5kF4fCo9K+AEI9qJvBpGcGW+IukbdHKdi4roQmHiTqF+ShI1U8UueKNzvgGQIsj+eWlZY5jsyKKfz9QTX8pYQEYF8IMUxvMoYSgvNXZLaT4AO0rmYGWlCmn54bW7gZpHLz71PGKeGPAfm8YqbkStyXCFdSE7gP1pthYSZ6CuFF0ev4fXB84nYMNHSq37vcYm5y5gOmW40cszDYHubDbEm1+xsfJKHwy1eqhjL4Xb4VD0h0EnU44U7TQfKyFKJvC5Dj1PfLbMomASjdCPMucFTEwp/UqTI0niuMamv8Y/GbPg+jQm+vGvApN9FZD3b8rnEZyHe9iW0uQJ0pb1lJK80Yrls6JlzF0Cqq+fa7w9U2S21byal0Sr/VUzPVnKdtKx1Prc2X0thLlP73LWHHe2rSh</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LaptopPet'
@@ -2488,7 +2635,7 @@ $timer.add_Tick({
         if ($P.hover -and -not $P.form.Bounds.Contains([Windows.Forms.Cursor]::Position)) { $P.hover = $false }   # 以防没收到滑鼠离开
         $P.frame++
         if ($P.msgT -gt 0) { $P.msgT-- }
-        if ($P.kind -ne 'fish') {
+        if ($P.kind -ne 'fish' -and $P.kind -ne 'mouse') {
             if ($Clock.tick % 125 -eq 0 -and $P.hunger -gt 0) { $P.hunger-- }                          # 每 5 秒饿 1
             if ($P.mode -ne 'sleep' -and $Clock.tick % 200 -eq 0 -and $P.energy -gt 0) { $P.energy-- }  # 每 8 秒累 1
         }
@@ -2500,7 +2647,8 @@ $timer.add_Tick({
     }
     if ($Clock.tick % 1500 -eq 0) { Save-Pets; Save-Chat }       # 每分钟存一次亲密度和陪伴时间
     if ($NoteState.dirty -and $Clock.tick % 50 -eq 0) { Save-Note }   # 便条有改就 2 秒内存好
-    if ($Clock.tick % 25 -eq 13) { Poll-Desktop }       # 每秒看一次桌面
+    if ($Clock.tick % 25 -eq 13) { Poll-Desktop }
+    if ($Clock.tick % 25 -eq 7) { Check-AutoRefill }    # 喂食器空了 15 分钟主人都没加, 就自己加满       # 每秒看一次桌面
     Update-Ball
     Assign-Tasks
     if ($Clock.tick -ge $Chat.nextShow) {                    # 朋友的消息一条一条来 (至少隔 2.4 秒)
