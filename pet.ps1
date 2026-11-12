@@ -377,7 +377,7 @@ function Draw-Pet($P, [Drawing.Graphics]$g) {
         }
         'dachshund' { Blob $g $P.brDark2 0 62 12 32; Blob $g $P.brDark2 44 62 12 32 }
         'golden' {
-            Blob $g $P.brDark2 -8 56 16 40; Blob $g $P.brDark2 40 56 16 40          # 长长的垂耳朵
+            Blob $g $P.brDark2 -8 56 16 40; Blob $g $P.brDark2 48 56 16 40          # 长长的垂耳朵
             $g.FillEllipse($P.brDark2, (F 13), (F 61), (F 12), (F 6))                  # 眉毛
             $g.FillEllipse($P.brDark2, (F 31), (F 61), (F 12), (F 6))
         }
@@ -434,6 +434,7 @@ function Draw-Pet($P, [Drawing.Graphics]$g) {
     }
 
     }   # 没照片才画的脸到这里
+    if ($P.hat) { $g.DrawImage($P.hat, (New-Object Drawing.RectangleF($HatBox.x, $HatBox.y, $HatBox.w, $HatBox.h))) }   # 头饰, 盖在头上
 
     # 小饼干零食 (双击喂的时候), 越吃越小
     if ($st -eq 'eat' -and $P.mode -ne 'atFeeder' -and $P.mode -ne 'task' -and $P.mode -ne 'ate') {
@@ -617,11 +618,11 @@ function Update-Pet($P) {
     # 饿了去吃饭, 困了去睡觉
     if (-not $P.stay -and $P.mode -ne 'goto') {
         if ($P.hunger -lt 40 -and $Bowl.food -gt 0 -and -not (Feeder-Busy $P)) {
-            Go-To $P ($feeder.Left + 28 - $P.w / 2 - $P.sc * $P.mouthX) ($wa.Bottom - $YOFF - $P.sc * 132 + 1) 'eat'; Say $P '去吃饭~'
+            Go-To $P ($feeder.Left + 28 - $P.w / 2 - $P.sc * $P.mouthX) ($feeder.Bottom - $YOFF - $P.sc * 132 + 1) 'eat'; Say $P '去吃饭~'
         } elseif ($P.kind -eq 'cat' -and $P.hunger -lt 40 -and $Bowl.food -le 0 -and @(Fish-List).Count -gt 0) {
             Start-Chase $P (Nearest-Fish $P) $true 500; Say $P '没饭了… 抓鱼吃!'          # 喂食器空了才吃鱼
         } elseif ($P.energy -lt 20) {
-            Go-To $P ($bed.Left + $BW / 2 - $P.w / 2 + $rand.Next(-18, 19)) ($wa.Bottom - 12 - $YOFF - $P.sc * 136) 'sleep'; Say $P '困了…'
+            Go-To $P ($bed.Left + $BW / 2 - $P.w / 2 + $rand.Next(-18, 19)) ($bed.Bottom - 12 - $YOFF - $P.sc * 136) 'sleep'; Say $P '困了…'
         } elseif ($P.kind -eq 'dog' -and $P.energy -gt 25 -and $P.hunger -gt 0 -and $Clock.tick -gt $P.ballRest -and (Ball-Moving)) {
             $P.mode = 'ball'; $P.kicks = 0; $P.chaseT = 500; Say $P '球! 汪汪!' 40
         }
@@ -1085,8 +1086,9 @@ function Build-PetMenu($P) {
     [void]$m.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
     $miPhoto = Add-MenuItem $m '换头像照片…' { param($src, $e) $P = $src.Owner.Tag; $bmp = Pick-Photo $P.form; if ($bmp) { Set-PetPhoto $P $bmp } }
     $P.miNoPhoto = Add-MenuItem $m '拿掉照片' { param($src, $e) Set-PetPhoto $src.Owner.Tag $null }
-    $miClothes = Add-MenuItem $m '设计衣服…' { param($src, $e) Show-ClothesDialog $src.Owner.Tag }
+    $miClothes = Add-MenuItem $m '设计衣服 / 头饰…' { param($src, $e) Show-ClothesDialog $src.Owner.Tag }
     $P.miNoClothes = Add-MenuItem $m '脱掉衣服' { param($src, $e) Set-PetClothes $src.Owner.Tag $null }
+    $P.miNoHat = Add-MenuItem $m '拿掉头饰' { param($src, $e) Set-PetHat $src.Owner.Tag $null }
     if ($P.kind -eq 'fish') { $miClothes.Visible = $false }
     if ($P.kind -eq 'fish') { $miPhoto.Visible = $false }
     [void](Add-MenuItem $m '加满喂食器' { Refill })
@@ -1107,6 +1109,7 @@ function Build-PetMenu($P) {
         $P.lblDoing.Text = '正在' + (Doing $P)
         $P.miNoPhoto.Visible = [bool]$P.photo
         $P.miNoClothes.Visible = [bool]$P.clothes
+        $P.miNoHat.Visible = [bool]$P.hat
         $P.miTalk.Visible = [bool]$Chat.code
         $P.miPair.Text = '聊天配对…' + $(if (-not $Chat.code) { '' } elseif ($Chat.ctl -and $Chat.ctl.online) { '  (已连上)' } else { '  (连接中…)' })
     })
@@ -1354,20 +1357,22 @@ function Draw-Clothes($P, $g, $breed) {
     $g.DrawPath($penOut, $clip)
     $clip.Dispose()
 }
-function New-ClothesBitmap { New-Object Drawing.Bitmap(($ClothesBox.w * $ClothesBox.k), ($ClothesBox.h * $ClothesBox.k), [Drawing.Imaging.PixelFormat]::Format32bppArgb) }
+# 头饰也是一张透明图, 盖在头那一块 (x -20..76, y 8..100), 可以超出头 (帽子, 蝴蝶结...)
+$HatBox = @{ x = -20; y = 8; w = 96; h = 92; k = 4 }
+function New-ClothesBitmap($box = $ClothesBox) { New-Object Drawing.Bitmap(($box.w * $box.k), ($box.h * $box.k), [Drawing.Imaging.PixelFormat]::Format32bppArgb) }
 function Save-Clothes($bmp) {
     New-Item -ItemType Directory -Force $ClothesDir | Out-Null
     $fname = [guid]::NewGuid().ToString('N') + '.png'
     $bmp.Save((Join-Path $ClothesDir $fname), [Drawing.Imaging.ImageFormat]::Png)
     $fname
 }
-function Load-Clothes($fname) {
+function Load-Clothes($fname, $box = $ClothesBox) {
     if (-not $fname) { return $null }
     $file = Join-Path $ClothesDir ([IO.Path]::GetFileName($fname))
     if (-not (Test-Path -LiteralPath $file)) { return $null }
     $ms = New-Object IO.MemoryStream(, [IO.File]::ReadAllBytes($file))
     $img = [Drawing.Image]::FromStream($ms)
-    $bmp = New-ClothesBitmap
+    $bmp = New-ClothesBitmap $box
     $gr = [Drawing.Graphics]::FromImage($bmp); $gr.DrawImage($img, 0, 0, $bmp.Width, $bmp.Height); $gr.Dispose()
     $img.Dispose(); $ms.Dispose()
     $bmp
@@ -1384,9 +1389,16 @@ function Set-PetClothes($P, $bmp) {
     $P.form.Invalidate()
     Save-Pets
 }
+function Set-PetHat($P, $bmp) {                 # 头饰也放 clothes 文件夹
+    Delete-Clothes $P.hatFile
+    $P.hat = $bmp
+    $P.hatFile = if ($bmp) { Save-Clothes $bmp } else { '' }
+    $P.form.Invalidate()
+    Save-Pets
+}
 
 # ---------- 贴纸: 点一下贴纸, 再点宠物身上就贴上去 ----------
-$StickerNames = @('heart', 'star', 'flower', 'paw', 'bone', 'fish', 'smile', 'note')
+$StickerNames = @('bow', 'crown', 'partyhat', 'glasses', 'heart', 'star', 'flower', 'paw', 'bone', 'fish', 'smile', 'note')
 function Sticker-Brush($r, $gg, $b) { New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(255, $r, $gg, $b)) }
 # 在 (cx, cy) 画一个大约 s 宽的贴纸 (用 -0.5..0.5 的小格子画, 再放大)
 function Draw-Sticker($g, $name, $cx, $cy, $s) {
@@ -1403,6 +1415,22 @@ function Draw-Sticker($g, $name, $cx, $cy, $s) {
     $ol = New-Object Drawing.Pen(([Drawing.Color]::FromArgb(255, 70, 50, 40)), 0.06); $ol.LineJoin = 'Round'
     $path = New-Object Drawing.Drawing2D.GraphicsPath
     switch ($name) {
+        'bow' {          # 蝴蝶结
+            $path.AddPolygon((Pts @(0, 0, -0.48, -0.3, -0.48, 0.3))); $path.AddPolygon((Pts @(0, 0, 0.48, -0.3, 0.48, 0.3)))
+            $br = Sticker-Brush 235 80 120
+        }
+        'crown' {        # 小皇冠
+            $path.AddPolygon((Pts @(-0.44, 0.3, -0.44, -0.22, -0.22, 0.04, 0, -0.36, 0.22, 0.04, 0.44, -0.22, 0.44, 0.3)))
+            $br = Sticker-Brush 250 200 60
+        }
+        'partyhat' {     # 生日帽
+            $path.AddPolygon((Pts @(0, -0.42, 0.3, 0.44, -0.3, 0.44)))
+            $br = Sticker-Brush 90 175 235
+        }
+        'glasses' {      # 墨镜
+            $path.AddEllipse((F -0.48), (F -0.17), (F 0.4), (F 0.34)); $path.AddEllipse((F 0.08), (F -0.17), (F 0.4), (F 0.34))
+            $br = Sticker-Brush 45 45 60
+        }
         'heart' {
             $path.AddBezier((F 0), (F 0.42), (F -0.62), (F 0.02), (F -0.38), (F -0.5), (F 0), (F -0.18))
             $path.AddBezier((F 0), (F -0.18), (F 0.38), (F -0.5), (F 0.62), (F 0.02), (F 0), (F 0.42))
@@ -1451,6 +1479,24 @@ function Draw-Sticker($g, $name, $cx, $cy, $s) {
             $g.DrawArc($ol, (F -0.24), (F -0.12), (F 0.48), (F 0.38), (F 20), (F 140))
         }
         'heart' { $wb = Sticker-Brush 255 255 255; $g.FillEllipse($wb, (F -0.3), (F -0.18), (F 0.12), (F 0.09)); $wb.Dispose() }
+        'bow' { $g.FillEllipse($br, (F -0.12), (F -0.12), (F 0.24), (F 0.24)); $g.DrawEllipse($ol, (F -0.12), (F -0.12), (F 0.24), (F 0.24)) }
+        'crown' {
+            $rb = Sticker-Brush 235 70 90
+            foreach ($cx in @(-0.44, 0, 0.44)) { $cy = if ($cx -eq 0) { -0.36 } else { -0.22 }; $g.FillEllipse($rb, (F ($cx - 0.07)), (F ($cy - 0.07)), (F 0.14), (F 0.14)) }
+            $rb.Dispose()
+        }
+        'partyhat' {
+            $pb = Sticker-Brush 250 210 60; $kb = Sticker-Brush 245 150 190
+            foreach ($dt in @(@(-0.1, 0.22), @(0.1, 0.02), @(-0.04, -0.16))) { $g.FillEllipse($kb, (F ($dt[0] - 0.05)), (F ($dt[1] - 0.05)), (F 0.1), (F 0.1)) }
+            $g.FillEllipse($pb, (F -0.09), (F -0.54), (F 0.18), (F 0.18)); $g.DrawEllipse($ol, (F -0.09), (F -0.54), (F 0.18), (F 0.18))
+            $pb.Dispose(); $kb.Dispose()
+        }
+        'glasses' {
+            $bp = New-Object Drawing.Pen(([Drawing.Color]::FromArgb(255, 45, 45, 60)), 0.07)
+            $g.DrawLine($bp, (F -0.1), (F -0.04), (F 0.1), (F -0.04)); $bp.Dispose()
+            $wb = Sticker-Brush 255 255 255
+            $g.FillEllipse($wb, (F -0.38), (F -0.1), (F 0.1), (F 0.07)); $g.FillEllipse($wb, (F 0.18), (F -0.1), (F 0.1), (F 0.07)); $wb.Dispose()
+        }
     }
     $dk.Dispose(); $br.Dispose(); $ol.Dispose(); $path.Dispose()
     $g.Restore($gs)
@@ -1465,13 +1511,32 @@ function Shrink-Image($img, $max) {             # 缩小到长边最多 $max (�
     $gr = [Drawing.Graphics]::FromImage($out); $gr.InterpolationMode = 'HighQualityBicubic'; $gr.DrawImage($img, 0, 0, $out.Width, $out.Height); $gr.Dispose()
     $out
 }
-function Clothes-Stamp($ui, $pt) {              # 把选中的贴纸贴到衣服上
-    $gr = [Drawing.Graphics]::FromImage($ui.bmp)
-    Draw-Sticker $gr $ui.sticker $pt.X $pt.Y ((6 + $ui.size * 2.5) * $ClothesBox.k)
-    $gr.Dispose()
+# 贴上去的贴纸先不印死: 可以拖、拉右下角改大小、右键删掉. 按「穿上」才印到衣服上
+function St-Size($ui) { (6 + $ui.size * 2.5) * $ui.box.k }
+function St-Tol($ui) { 10 / $ui.zoom / $ui.look.sc * $ui.box.k }          # 10 个画面点 = 衣服图上多少
+function St-Hit($ui, $pt) {                     # 点到哪个贴纸 (上面的先)
+    for ($i = $ui.stickers.Count - 1; $i -ge 0; $i--) {
+        $s = $ui.stickers[$i]
+        if ([Math]::Abs($pt.X - $s.x) -le $s.s / 2 -and [Math]::Abs($pt.Y - $s.y) -le $s.s / 2) { return $s }
+    }
+    $null
+}
+function St-OnHandle($ui, $s, $pt) {            # 点到右下角的小方块
+    $t = St-Tol $ui
+    ([Math]::Abs($pt.X - ($s.x + $s.s / 2)) -le $t) -and ([Math]::Abs($pt.Y - ($s.y + $s.s / 2)) -le $t)
+}
+function Layer-Composite($ly) {                 # 画的 + 贴纸, 合成一张
+    $c = $ly.bmp.Clone()
+    if ($ly.stickers.Count) {
+        $gr = [Drawing.Graphics]::FromImage($c)
+        foreach ($s in $ly.stickers) { Draw-Sticker $gr $s.name $s.x $s.y $s.s }
+        $gr.Dispose()
+    }
+    $c
 }
 function Clothes-SelectSticker($ui, $st, $btn) {
     $ui.sticker = $st
+    $ui.selSt = $null; $ui.canvas.Invalidate()
     foreach ($b in $ui.stickerBtns) { $b.FlatAppearance.BorderSize = $(if ($b -eq $btn) { 3 } else { 1 }) }
     $ui.canvas.Cursor = $(if ($st) { [Windows.Forms.Cursors]::Hand } else { [Windows.Forms.Cursors]::Cross })
     if ($st) { $ui.erase = $false; $ui.eraseBox.Checked = $false; Clothes-MarkSwatch $ui $null }
@@ -1482,7 +1547,7 @@ $ClothesColors = @(@(230, 60, 60), @(245, 140, 40), @(250, 210, 50), @(90, 190, 
 function Clothes-Point($ui, $mx, $my) {          # 窗口里的点 -> 衣服图上的点
     $L = $ui.look
     $px = ($mx / $ui.zoom - $L.w / 2) / $L.sc; $py = ($my / $ui.zoom - $YOFF) / $L.sc
-    New-Object Drawing.PointF((($px - $ClothesBox.x) * $ClothesBox.k), (($py - $ClothesBox.y) * $ClothesBox.k))
+    New-Object Drawing.PointF((($px - $ui.box.x) * $ui.box.k), (($py - $ui.box.y) * $ui.box.k))
 }
 function Clothes-Stroke($ui, $a, $b) {
     $gr = [Drawing.Graphics]::FromImage($ui.bmp)
@@ -1495,30 +1560,61 @@ function Clothes-Stroke($ui, $a, $b) {
     } else { $gr.DrawLine($pen, $a, $b) }
     $pen.Dispose(); $gr.Dispose()
 }
-function Clothes-Undo-Push($ui) {
-    [void]$ui.undo.Add($ui.bmp.Clone())
-    if ($ui.undo.Count -gt 30) { $ui.undo[0].Dispose(); $ui.undo.RemoveAt(0) }
+function Clothes-Undo-Push($ui) {               # 记下现在的样子 (画的 + 贴纸)
+    [void]$ui.undo.Add(@{ bmp = $ui.bmp.Clone(); st = @($ui.stickers | ForEach-Object { @{ name = $_.name; x = $_.x; y = $_.y; s = $_.s } }) })
+    if ($ui.undo.Count -gt 30) { $ui.undo[0].bmp.Dispose(); $ui.undo.RemoveAt(0) }
 }
 function Draw-ClothesCanvas($ui, $g) {
     $g.Clear([Drawing.Color]::FromArgb(255, 245, 245, 240))
     $g.ScaleTransform($ui.zoom, $ui.zoom)
-    $ui.look.clothes = $ui.bmp
+    $cc = Layer-Composite $ui.layers.clothes; $hc = Layer-Composite $ui.layers.hat
+    $ui.look.clothes = $cc; $ui.look.hat = $hc
     $saveLabel = ${function:Label}; ${function:Label} = {}     # 不画名字
-    try { Draw-Pet $ui.look $g } finally { ${function:Label} = $saveLabel }
+    try { Draw-Pet $ui.look $g } finally { ${function:Label} = $saveLabel; $ui.look.clothes = $null; $ui.look.hat = $null; $cc.Dispose(); $hc.Dispose() }
+    $sel = $ui.selSt
+    if ($sel) {                                                # 选中的贴纸: 蓝色虚线框 + 右下角拉大小的方块
+        $L = $ui.look; $b = $ui.box
+        $sx = $L.w / 2 + ($b.x + ($sel.x - $sel.s / 2) / $b.k) * $L.sc; $sy = $YOFF + ($b.y + ($sel.y - $sel.s / 2) / $b.k) * $L.sc; $sw = $sel.s / $b.k * $L.sc
+        $pen = New-Object Drawing.Pen(([Drawing.Color]::FromArgb(255, 40, 120, 230)), (1.5 / $ui.zoom)); $pen.DashStyle = 'Dash'
+        $g.DrawRectangle($pen, (F $sx), (F $sy), (F $sw), (F $sw)); $pen.Dispose()
+        $hs = 9 / $ui.zoom; $hb = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(255, 40, 120, 230))
+        $g.FillRectangle($hb, (F ($sx + $sw - $hs / 2)), (F ($sy + $sw - $hs / 2)), (F $hs), (F $hs)); $hb.Dispose()
+    }
+    if ($ui.mode -eq 'hat') {                                  # 头饰模式: 虚线框出可以画的地方
+        $L = $ui.look
+        $pen = New-Object Drawing.Pen(([Drawing.Color]::FromArgb(160, 120, 120, 120)), (1 / $ui.zoom)); $pen.DashStyle = 'Dash'
+        $g.DrawRectangle($pen, (F ($L.w / 2 + $HatBox.x * $L.sc)), (F ($YOFF + $HatBox.y * $L.sc)), (F ($HatBox.w * $L.sc)), (F ($HatBox.h * $L.sc)))
+        $pen.Dispose()
+    }
+}
+# 换图层: 衣服 / 头饰 (各自有自己的撤销)
+function Clothes-SetMode($ui, $mode) {
+    $ui.mode = $mode
+    $ly = $ui.layers[$mode]
+    $ui.bmp = $ly.bmp; $ui.box = $ly.box; $ui.undo = $ly.undo; $ui.stickers = $ly.stickers; $ui.selSt = $null; $ui.drag = $null
+    $ui.fillBtn.Enabled = ($mode -eq 'clothes')                # 头饰不能全部涂满 (会盖住整个头)
+    $ui.hint.Text = if ($mode -eq 'clothes') { '直接在宠物身上画, 只有身体会穿到. 画出去的地方看不到, 不用怕.' } else { '在头上画帽子、蝴蝶结、眼镜… 虚线框里都可以画, 会盖在头上面.' }
+    $ui.canvas.Invalidate()
 }
 function Show-ClothesDialog($P) {
     $d = New-Object Windows.Forms.Form
-    $d.Text = "给 $($P.name) 设计衣服"
+    $d.Text = "给 $($P.name) 设计衣服 / 头饰"
     $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
     $d.StartPosition = 'CenterScreen'; $d.TopMost = $true; $d.Font = $fontUI; $d.KeyPreview = $true
     $look = New-PetLook '' $P.kind $P.breed $P.color $P.photo
     $look.frame = 30; $look.state = 'idle'; $look.dir = 1
     $zoom = [Math]::Round(460.0 / $look.w, 2)
     $cw = [int]($look.w * $zoom); $ch = [int]($look.h * $zoom)
-    $bmp = New-ClothesBitmap
-    if ($P.clothes) { $gr = [Drawing.Graphics]::FromImage($bmp); $gr.DrawImage($P.clothes, 0, 0, $bmp.Width, $bmp.Height); $gr.Dispose() }
-    $ui = @{ look = $look; zoom = $zoom; bmp = $bmp; color = [Drawing.Color]::FromArgb(255, 230, 60, 60); size = 4; erase = $false
-             last = $null; undo = (New-Object System.Collections.ArrayList); swatches = @(); result = $null; sticker = $null; stickerBtns = @() }
+    $layers = @{}
+    foreach ($ln in @(@('clothes', $ClothesBox, $P.clothes), @('hat', $HatBox, $P.hat))) {     # 从现在穿的开始改
+        $lb0 = New-ClothesBitmap $ln[1]
+        if ($ln[2]) { $gr = [Drawing.Graphics]::FromImage($lb0); $gr.DrawImage($ln[2], 0, 0, $lb0.Width, $lb0.Height); $gr.Dispose() }
+        $layers[$ln[0]] = @{ bmp = $lb0; box = $ln[1]; undo = (New-Object System.Collections.ArrayList); stickers = (New-Object System.Collections.ArrayList) }
+    }
+    $ui = @{ look = $look; zoom = $zoom; layers = $layers; mode = 'clothes'; bmp = $layers.clothes.bmp; box = $ClothesBox; undo = $layers.clothes.undo
+             stickers = $layers.clothes.stickers; selSt = $null; drag = $null
+             color = [Drawing.Color]::FromArgb(255, 230, 60, 60); size = 4; erase = $false
+             last = $null; swatches = @(); result = $null; sticker = $null; stickerBtns = @() }
     $d.Tag = $ui
 
     $cv = New-Object Windows.Forms.Panel
@@ -1526,23 +1622,64 @@ function Show-ClothesDialog($P) {
     [Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'NonPublic,Instance').SetValue($cv, $true, $null)
     $cv.add_Paint({ param($src, $e) Draw-ClothesCanvas $src.FindForm().Tag $e.Graphics })
     $cv.add_MouseDown({ param($src, $e)
-        if ($e.Button -ne 'Left') { return }
         $ui = $src.FindForm().Tag
+        $pt = Clothes-Point $ui $e.X $e.Y
+        if ($e.Button -eq 'Right') {                                  # 右键贴纸 = 删掉
+            $h = St-Hit $ui $pt
+            if ($h) { Clothes-Undo-Push $ui; $ui.stickers.Remove($h); if ($ui.selSt -eq $h) { $ui.selSt = $null }; $src.Invalidate() }
+            return
+        }
+        if ($e.Button -ne 'Left') { return }
+        $sel = $ui.selSt
+        if ($sel -and (St-OnHandle $ui $sel $pt)) { Clothes-Undo-Push $ui; $ui.drag = @{ mode = 'size'; st = $sel }; return }   # 拉角改大小
+        $h = St-Hit $ui $pt
+        if ($h) {                                                     # 点到贴纸: 选中, 可以拖
+            Clothes-Undo-Push $ui
+            $ui.stickers.Remove($h); [void]$ui.stickers.Add($h)        # 拿到最上面
+            $ui.selSt = $h; $ui.drag = @{ mode = 'move'; st = $h; dx = $pt.X - $h.x; dy = $pt.Y - $h.y }
+            $src.Invalidate(); return
+        }
+        if ($ui.sticker) {                                            # 拿着贴纸点空的地方: 贴一个新的
+            Clothes-Undo-Push $ui
+            $n = @{ name = $ui.sticker; x = $pt.X; y = $pt.Y; s = (St-Size $ui) }
+            [void]$ui.stickers.Add($n); $ui.selSt = $n; $ui.drag = @{ mode = 'move'; st = $n; dx = 0; dy = 0 }
+            $src.Invalidate(); return
+        }
+        $ui.selSt = $null
         Clothes-Undo-Push $ui
-        if ($ui.sticker) { Clothes-Stamp $ui (Clothes-Point $ui $e.X $e.Y); $src.Invalidate(); return }   # 贴纸: 点一下贴一个
-        $pt = Clothes-Point $ui $e.X $e.Y; Clothes-Stroke $ui $pt $pt; $ui.last = $pt; $src.Invalidate()
+        Clothes-Stroke $ui $pt $pt; $ui.last = $pt; $src.Invalidate()
     })
     $cv.add_MouseMove({ param($src, $e)
         $ui = $src.FindForm().Tag
+        $pt = Clothes-Point $ui $e.X $e.Y
+        if ($ui.drag) {
+            $s = $ui.drag.st
+            if ($ui.drag.mode -eq 'move') { $s.x = $pt.X - $ui.drag.dx; $s.y = $pt.Y - $ui.drag.dy }
+            else { $s.s = [Math]::Max(4 * $ui.box.k, 2 * [Math]::Max([Math]::Abs($pt.X - $s.x), [Math]::Abs($pt.Y - $s.y))) }
+            $src.Invalidate(); return
+        }
+        if ($e.Button -eq 'None') {                                   # 滑鼠形状告诉你可以做什么
+            $src.Cursor = if ($ui.selSt -and (St-OnHandle $ui $ui.selSt $pt)) { [Windows.Forms.Cursors]::SizeNWSE }
+                          elseif (St-Hit $ui $pt) { [Windows.Forms.Cursors]::SizeAll }
+                          elseif ($ui.sticker) { [Windows.Forms.Cursors]::Hand } else { [Windows.Forms.Cursors]::Cross }
+            return
+        }
         if ($e.Button -ne 'Left' -or -not $ui.last) { return }
-        $pt = Clothes-Point $ui $e.X $e.Y; Clothes-Stroke $ui $ui.last $pt; $ui.last = $pt; $src.Invalidate()
+        Clothes-Stroke $ui $ui.last $pt; $ui.last = $pt; $src.Invalidate()
     })
-    $cv.add_MouseUp({ param($src, $e) $src.FindForm().Tag.last = $null })
+    $cv.add_MouseUp({ param($src, $e) $ui = $src.FindForm().Tag; $ui.last = $null; $ui.drag = $null })
     $ui.canvas = $cv
 
     $x0 = $cw + 22; $y = 10
+    foreach ($md in @(@('clothes', '衣服', 0), @('hat', '头饰', 84))) {        # 画哪一层
+        $rb = New-Object Windows.Forms.RadioButton; $rb.Appearance = 'Button'; $rb.TextAlign = 'MiddleCenter'; $rb.Text = $md[1]; $rb.Tag = $md[0]
+        $rb.SetBounds(($x0 + $md[2]), $y, 80, 30); $rb.Checked = ($md[0] -eq 'clothes')
+        $rb.add_CheckedChanged({ param($src, $e) if ($src.Checked) { Clothes-SetMode $src.FindForm().Tag $src.Tag } })
+        $d.Controls.Add($rb)
+    }
+    $y += 36
     $lb = New-Object Windows.Forms.Label; $lb.Text = "直接在宠物身上画, 只有身体会穿到. 画出去的地方看不到, 不用怕."; $lb.SetBounds($x0, $y, 170, 54); $y += 58
-    $d.Controls.Add($lb)
+    $d.Controls.Add($lb); $ui.hint = $lb
     $i = 0
     foreach ($c in $ClothesColors) {          # 颜色格子
         $sb = New-Object Windows.Forms.Button
@@ -1561,21 +1698,24 @@ function Show-ClothesDialog($P) {
     $d.Controls.Add($more); $y += 38
     $sl = New-Object Windows.Forms.Label; $sl.Text = '笔 / 贴纸的大小'; $sl.SetBounds($x0, $y, 164, 20); $d.Controls.Add($sl); $y += 20
     $tk = New-Object Windows.Forms.TrackBar; $tk.Minimum = 1; $tk.Maximum = 14; $tk.Value = 4; $tk.TickFrequency = 1; $tk.SetBounds($x0, $y, 170, 40)
-    $tk.add_ValueChanged({ param($src, $e) $src.FindForm().Tag.size = $src.Value })
+    $tk.add_ValueChanged({ param($src, $e)
+        $ui = $src.FindForm().Tag; $ui.size = $src.Value
+        if ($ui.selSt) { $ui.selSt.s = St-Size $ui; $ui.canvas.Invalidate() }     # 选中的贴纸也跟着变大小
+    })
     $d.Controls.Add($tk); $y += 44
     $er = New-Object Windows.Forms.CheckBox; $er.Text = '橡皮擦'; $er.Appearance = 'Button'; $er.TextAlign = 'MiddleCenter'; $er.SetBounds($x0, $y, 80, 28)
     $er.add_CheckedChanged({ param($src, $e) $ui = $src.FindForm().Tag; $ui.erase = $src.Checked; if ($src.Checked -and $ui.sticker) { Clothes-SelectSticker $ui $null $null } })
     $d.Controls.Add($er); $ui.eraseBox = $er
     $fill = New-Object Windows.Forms.Button; $fill.Text = '全部涂满'; $fill.SetBounds(($x0 + 84), $y, 80, 28)
     $fill.add_Click({ param($src, $e) $ui = $src.FindForm().Tag; Clothes-Undo-Push $ui; $gr = [Drawing.Graphics]::FromImage($ui.bmp); $gr.Clear($ui.color); $gr.Dispose(); $ui.canvas.Invalidate() })
-    $d.Controls.Add($fill); $y += 34
+    $d.Controls.Add($fill); $ui.fillBtn = $fill; $y += 34
     $un = New-Object Windows.Forms.Button; $un.Text = '撤销'; $un.SetBounds($x0, $y, 80, 28)
     $un.add_Click({ param($src, $e) Clothes-Undo $src.FindForm().Tag })
     $d.Controls.Add($un)
     $clr = New-Object Windows.Forms.Button; $clr.Text = '全部擦掉'; $clr.SetBounds(($x0 + 84), $y, 80, 28)
-    $clr.add_Click({ param($src, $e) $ui = $src.FindForm().Tag; Clothes-Undo-Push $ui; $gr = [Drawing.Graphics]::FromImage($ui.bmp); $gr.Clear([Drawing.Color]::Transparent); $gr.Dispose(); $ui.canvas.Invalidate() })
+    $clr.add_Click({ param($src, $e) $ui = $src.FindForm().Tag; Clothes-Undo-Push $ui; $gr = [Drawing.Graphics]::FromImage($ui.bmp); $gr.Clear([Drawing.Color]::Transparent); $gr.Dispose(); $ui.stickers.Clear(); $ui.selSt = $null; $ui.canvas.Invalidate() })
     $d.Controls.Add($clr); $y += 38
-    $stl = New-Object Windows.Forms.Label; $stl.Text = '贴纸: 选一个, 再点宠物身上'; $stl.SetBounds($x0, $y, 170, 20); $d.Controls.Add($stl); $y += 22
+    $stl = New-Object Windows.Forms.Label; $stl.Text = "贴纸: 选一个, 再点宠物身上.`n贴好可以拖, 拉蓝色角改大小, 右键删掉"; $stl.SetBounds($x0, $y, 176, 54); $d.Controls.Add($stl); $y += 56
     $i = 0
     foreach ($sn in $StickerNames) {
         $kb = New-Object Windows.Forms.Button
@@ -1584,7 +1724,7 @@ function Show-ClothesDialog($P) {
         $kb.add_Click({ param($src, $e) $ui = $src.FindForm().Tag; if ($ui.sticker -eq $src.Tag) { Clothes-SelectSticker $ui $null $null } else { Clothes-SelectSticker $ui $src.Tag $src } })
         $d.Controls.Add($kb); $ui.stickerBtns += $kb; $i++
     }
-    $y += 2 * 34 + 2
+    $y += [Math]::Ceiling($StickerNames.Count / 4) * 34 + 2
     $pic = New-Object Windows.Forms.Button; $pic.Text = '用图片当贴纸…'; $pic.SetBounds($x0, $y, 164, 28)
     $pic.add_Click({ param($src, $e)
         $fm = $src.FindForm(); $ui = $fm.Tag
@@ -1604,21 +1744,33 @@ function Show-ClothesDialog($P) {
     $ok.SetBounds($x0, $by, 80, 28); $no.SetBounds(($x0 + 84), $by, 80, 28)
     $d.Controls.AddRange(@($cv, $ok, $no)); $d.CancelButton = $no
     $d.ClientSize = New-Object Drawing.Size(($x0 + 176), ([Math]::Max($ch, $by + 18) + 20))
-    $d.add_KeyDown({ param($src, $e) if ($e.Control -and $e.KeyCode -eq 'Z') { Clothes-Undo $src.Tag; $e.SuppressKeyPress = $true } })   # Ctrl+Z
+    $d.add_KeyDown({ param($src, $e)
+        $ui = $src.Tag
+        if ($e.Control -and $e.KeyCode -eq 'Z') { Clothes-Undo $ui; $e.SuppressKeyPress = $true }         # Ctrl+Z
+        elseif ($e.KeyCode -eq 'Delete' -and $ui.selSt) {                                                # Delete 删掉选中的贴纸
+            Clothes-Undo-Push $ui; $ui.stickers.Remove($ui.selSt); $ui.selSt = $null; $ui.canvas.Invalidate(); $e.SuppressKeyPress = $true
+        }
+    })
     Clothes-MarkSwatch $ui $ui.swatches[0]
     try {
-        if ($d.ShowDialog() -ne 'OK') { $bmp.Dispose(); return }
-        if (Clothes-Empty $bmp) { $bmp.Dispose(); Set-PetClothes $P $null } else { Set-PetClothes $P $bmp }
+        if ($d.ShowDialog() -ne 'OK') { foreach ($ly in $layers.Values) { $ly.bmp.Dispose() }; return }
+        $cb = Layer-Composite $layers.clothes; $hb = Layer-Composite $layers.hat       # 贴纸这时才印上去
+        foreach ($ly in $layers.Values) { $ly.bmp.Dispose() }
+        if (Clothes-Empty $cb) { $cb.Dispose(); $cb = $null }       # 什么都没画 = 没穿
+        if (Clothes-Empty $hb) { $hb.Dispose(); $hb = $null }
+        Set-PetClothes $P $cb; Set-PetHat $P $hb
     } finally {
-        foreach ($u in $ui.undo) { $u.Dispose() }
+        foreach ($ly in $layers.Values) { foreach ($u in $ly.undo) { $u.bmp.Dispose() } }
         $d.Dispose()
     }
 }
 function Clothes-Undo($ui) {
     if ($ui.undo.Count -eq 0) { return }
     $last = $ui.undo[$ui.undo.Count - 1]; $ui.undo.RemoveAt($ui.undo.Count - 1)
-    $gr = [Drawing.Graphics]::FromImage($ui.bmp); $gr.CompositingMode = 'SourceCopy'; $gr.DrawImage($last, 0, 0, $ui.bmp.Width, $ui.bmp.Height); $gr.Dispose()
-    $last.Dispose(); $ui.canvas.Invalidate()
+    $gr = [Drawing.Graphics]::FromImage($ui.bmp); $gr.CompositingMode = 'SourceCopy'; $gr.DrawImage($last.bmp, 0, 0, $ui.bmp.Width, $ui.bmp.Height); $gr.Dispose()
+    $last.bmp.Dispose()
+    $ui.stickers.Clear(); foreach ($s in $last.st) { [void]$ui.stickers.Add($s) }
+    $ui.selSt = $null; $ui.drag = $null; $ui.canvas.Invalidate()
 }
 function Clothes-MarkSwatch($ui, $sel) {        # 选中的颜色格子加粗框
     foreach ($s in $ui.swatches) { $s.FlatAppearance.BorderSize = $(if ($s -eq $sel) { 3 } else { 1 }) }
@@ -1659,7 +1811,7 @@ function New-PetLook($name, $kind, $breed, $colorName, $photo = $null) {
     $P
 }
 
-function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $photoFile = '', $clothesFile = '') {
+function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $photoFile = '', $clothesFile = '', $hatFile = '') {
     $ph = Load-Photo $photoFile
     $P = New-PetLook $name $kind $breed $colorName $ph
     $more = @{
@@ -1675,10 +1827,10 @@ function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $pho
         chat = $null; visitor = $false; visitorUntil = 0         # 头上的对话框 / 是不是朋友的宠物来串门
         love = [int]$love; playSec = [int]$playSec      # 亲密度 0-100, 陪伴秒数
         photoFile = $(if ($P.photo) { [string]$photoFile } else { '' })   # 照片文件名 (在 photos 文件夹)
-        clothes = $null; clothesFile = ''                       # 主人画的衣服 (在 clothes 文件夹)
+        clothes = $null; clothesFile = ''; hat = $null; hatFile = ''   # 主人画的衣服 / 头饰 (在 clothes 文件夹)
     }
     foreach ($k in $more.Keys) { $P[$k] = $more[$k] }
-    if ($P.kind -ne 'fish') { $P.clothes = Load-Clothes $clothesFile; if ($P.clothes) { $P.clothesFile = [string]$clothesFile } }
+    if ($P.kind -ne 'fish') { $P.clothes = Load-Clothes $clothesFile; if ($P.clothes) { $P.clothesFile = [string]$clothesFile }; $P.hat = Load-Clothes $hatFile $HatBox; if ($P.hat) { $P.hatFile = [string]$hatFile } }
 
     $fm = New-PetWindow $P.w $P.h
     $fm.Text = $name
@@ -1731,7 +1883,7 @@ function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $pho
 function Remove-Pet($P) {
     $ans = [Windows.Forms.MessageBox]::Show($P.form, "确定要送走 $($P.name) 吗?", '送走宠物', 'YesNo', 'Question')
     if ($ans -ne 'Yes') { return }
-    Delete-Photo $P.photoFile; Delete-Clothes $P.clothesFile
+    Delete-Photo $P.photoFile; Delete-Clothes $P.clothesFile; Delete-Clothes $P.hatFile
     $P.form.Close()
     $P.form.Dispose()
     Save-Pets
@@ -1739,13 +1891,13 @@ function Remove-Pet($P) {
 
 function Save-Pets {
     if (-not $Live) { return }
-    $list = @($Pets | Where-Object { -not $_.visitor } | ForEach-Object { [pscustomobject]@{ name = $_.name; kind = $_.kind; breed = $_.breed; color = $_.color; love = $_.love; playSec = $_.playSec; photo = $_.photoFile; clothes = $_.clothesFile } })
+    $list = @($Pets | Where-Object { -not $_.visitor } | ForEach-Object { [pscustomobject]@{ name = $_.name; kind = $_.kind; breed = $_.breed; color = $_.color; love = $_.love; playSec = $_.playSec; photo = $_.photoFile; clothes = $_.clothesFile; hat = $_.hatFile } })
     ConvertTo-Json -InputObject $list | Set-Content -Path $DataFile -Encoding UTF8
 }
 function Load-Pets {
     if (Test-Path $DataFile) {
         $data = Get-Content -Raw -Encoding UTF8 $DataFile | ConvertFrom-Json
-        foreach ($d in $data) { [void](New-Pet $d.name $d.kind $d.color $d.breed $d.love $d.playSec $d.photo $d.clothes) }
+        foreach ($d in $data) { [void](New-Pet $d.name $d.kind $d.color $d.breed $d.love $d.playSec $d.photo $d.clothes $d.hat) }
     }
     if ($Pets.Count -eq 0) { [void](New-Pet '咪咪' 'cat' '橘色'); Save-Pets }
 }
@@ -1897,6 +2049,49 @@ $feeder.ContextMenuStrip = $feederMenu
 $wa0 = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $feeder.Location = New-Object Drawing.Point(($wa0.Right - $FW - 10), ($wa0.Bottom - $FH))
 $bed.Location = New-Object Drawing.Point(($wa0.Right - $FW - 10 - $BW - 30), ($wa0.Bottom - $BH))
+
+# 喂食器和窝可以拖去别的地方 (放开就落到地上), 位置会记住
+$LayoutFile = Join-Path $PSScriptRoot 'layout.json'
+$Furn = @{ drag = $null; offX = 0; moved = 0 }
+function Furn-Ground($fm, $x) {                # 放在滑鼠那个屏幕的地上
+    $cur = [Windows.Forms.Cursor]::Position
+    $wa = [Windows.Forms.Screen]::FromPoint($cur).WorkingArea
+    $x = [Math]::Min([Math]::Max($x, $wa.Left), $wa.Right - $fm.Width)
+    $fm.Location = New-Object Drawing.Point([int]$x, ($wa.Bottom - $fm.Height))
+}
+foreach ($furnForm in @($feeder, $bed)) {
+    $furnForm.add_MouseDown({ param($src, $e) if ($e.Button -eq 'Left') { $Furn.drag = $src; $Furn.offX = [Windows.Forms.Cursor]::Position.X - $src.Left; $Furn.moved = 0 } })
+    $furnForm.add_MouseMove({ param($src, $e)
+        if ($Furn.drag -ne $src) { return }
+        $nx = [Windows.Forms.Cursor]::Position.X - $Furn.offX
+        $Furn.moved += [Math]::Abs($nx - $src.Left)
+        Furn-Ground $src $nx
+    })
+    $furnForm.add_MouseUp({ param($src, $e)
+        if ($Furn.drag -ne $src) { return }
+        $Furn.drag = $null
+        if ($Furn.moved -lt 3) { return }          # 只是点一下
+        if ($src -eq $feeder) {                    # 正在吃的宠物重新走过去
+            foreach ($P in @($Pets)) { if ($P.mode -eq 'atFeeder') { $P.mode = 'idle'; $P.modeT = 20; $P.eatT = 0; $P.drinkT = 0 } }
+        }
+        Save-Layout
+    })
+}
+function Save-Layout {
+    if (-not $Live) { return }
+    $o = [ordered]@{ feederX = $feeder.Left; feederY = $feeder.Top; bedX = $bed.Left; bedY = $bed.Top }
+    try { [IO.File]::WriteAllText($LayoutFile, ($o | ConvertTo-Json), (New-Object Text.UTF8Encoding($false))) } catch { }
+}
+function Load-Layout {
+    if (-not (Test-Path -LiteralPath $LayoutFile)) { return }
+    try { $o = [IO.File]::ReadAllText($LayoutFile) | ConvertFrom-Json } catch { return }
+    foreach ($it in @(@($feeder, $o.feederX, $o.feederY), @($bed, $o.bedX, $o.bedY))) {
+        $r = New-Object Drawing.Rectangle([int]$it[1], [int]$it[2], $it[0].Width, $it[0].Height)
+        $scr = @([Windows.Forms.Screen]::AllScreens | Where-Object { $_.WorkingArea.IntersectsWith($r) })   # 屏幕换了就用默认位置
+        if ($scr.Count) { $wa = $scr[0].WorkingArea; $it[0].Location = New-Object Drawing.Point([int]$it[1], ($wa.Bottom - $it[0].Height)) }
+    }
+}
+Load-Layout
 
 # 球: 放在窝的左边
 $Ball.form = New-PetWindow 28 28
@@ -2220,7 +2415,7 @@ function Show-Pair {
 }
 
 # ---------- 自动更新: 从 GitHub 拿新版本, 签名对得上才装 (只有 exe 装的才会更新) ----------
-$AppVersion = 2
+$AppVersion = 3
 $UpdateUrl = 'https://raw.githubusercontent.com/Huiyung99/Laptop-Pet/main/update/'
 $UpdatePubKey = '<RSAKeyValue><Modulus>m43v3YuEWypkH3H1iwF1Rpq0HXVYexJsmpTLMkqTZ+hww+h67OiiaNd8pFFEOGg+TZ1qwLloQW3F/d8wT80XWcx/77qGAfMHjiT2M40jv5kF4fCo9K+AEI9qJvBpGcGW+IukbdHKdi4roQmHiTqF+ShI1U8UueKNzvgGQIsj+eWlZY5jsyKKfz9QTX8pYQEYF8IMUxvMoYSgvNXZLaT4AO0rmYGWlCmn54bW7gZpHLz71PGKeGPAfm8YqbkStyXCFdSE7gP1pthYSZ6CuFF0ev4fXB84nYMNHSq37vcYm5y5gOmW40cszDYHubDbEm1+xsfJKHwy1eqhjL4Xb4VD0h0EnU44U7TQfKyFKJvC5Dj1PfLbMomASjdCPMucFTEwp/UqTI0niuMamv8Y/GbPg+jQm+vGvApN9FZD3b8rnEZyHe9iW0uQJ0pb1lJK80Yrls6JlzF0Cqq+fa7w9U2S21byal0Sr/VUzPVnKdtKx1Prc2X0thLlP73LWHHe2rSh</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LaptopPet'
