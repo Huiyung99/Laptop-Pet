@@ -1,0 +1,3 @@
+# keep update files byte-for-byte (the signature checks the exact bytes)
+update/** -text
+*.ps1 -text

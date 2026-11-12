@@ -1,0 +1,13 @@
+# Only these files go to GitHub. pets.json, photos, note.json, chat.json, dist stay on this computer.
+*
+!.gitignore
+!.gitattributes
+!README.md
+!pet.ps1
+!launcher.cs
+!build_exe.ps1
+!publish_update.ps1
+!start_pet.vbs
+!update/
+!update/pet.ps1
+!update/latest.json
