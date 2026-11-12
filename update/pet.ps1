@@ -549,7 +549,7 @@ function Format-Time($sec) {
     $days = [int][Math]::Floor($m / 1440); $hrs = [int][Math]::Floor(($m % 1440) / 60); $mins = $m % 60
     if ($days -gt 0) { "$days 天 $hrs 小时" } elseif ($hrs -gt 0) { "$hrs 小时 $mins 分" } else { "$mins 分钟" }
 }
-function Quit { Save-Pets; Save-Note; Save-Chat; Stop-Chat; [Windows.Forms.Application]::Exit() }
+function Quit { Save-Pets; Save-Note; Save-Chat; Stop-Chat; if ($Tray) { $Tray.Visible = $false }; [Windows.Forms.Application]::Exit() }
 
 function Snack($P) {
     if ($P.eatT -gt 0) { return }
@@ -569,7 +569,7 @@ function Check-AutoRefill {
     if ($Bowl.emptyAt -eq 0) { $Bowl.emptyAt = $Clock.tick; return }
     if ($Clock.tick - $Bowl.emptyAt -lt $AutoRefillTicks) { return }
     Refill
-    $P = @($Pets | Where-Object { -not $_.visitor -and $_.kind -ne 'fish' -and $_.kind -ne 'mouse' })[0]
+    $P = @($Pets | Where-Object { -not $_.visitor -and -not $_.hidden -and $_.kind -ne 'fish' -and $_.kind -ne 'mouse' })[0]
     if ($P) { Say $P '喂食器自己加满啦~' 100 }
 }
 function AutoRefill-Text {                     # 喂食器右键菜单显示还要等多久
@@ -657,17 +657,19 @@ function Update-Pet($P) {
     if ($P.mode -eq 'trick') { Update-Trick $P; return }          # 自己玩
     if ($P.mode -eq 'friend') { Update-Friend $P $wa; return }   # 跟朋友玩
     if ($P.mode -eq 'fly') { Update-FlyChase $P $wa; return }     # 追蝴蝶
-    if ($P.mode -eq 'ball') { Update-BallChase $P $wa; return }   # 狗追球
+    if ($P.mode -eq 'ball') { if ($FurnHide.ball) { $P.mode = 'idle'; $P.modeT = 40 } else { Update-BallChase $P $wa }; return }   # 狗追球 (球收起来就不追)
 
     # 饿了去吃饭, 困了去睡觉
     if (-not $P.stay -and $P.mode -ne 'goto') {
-        if ($P.hunger -lt 40 -and $Bowl.food -gt 0 -and -not (Feeder-Busy $P)) {
+        if ($P.hunger -lt 40 -and $Bowl.food -gt 0 -and -not $FurnHide.feeder -and -not (Feeder-Busy $P)) {
             Go-To $P ($feeder.Left + 28 - $P.w / 2 - $P.sc * $P.mouthX) ($feeder.Bottom - $YOFF - $P.sc * 132 + 1) 'eat'; Say $P '饿了… 去吃饭~'
-        } elseif ($P.kind -eq 'cat' -and $P.hunger -lt 40 -and $Bowl.food -le 0 -and @(Fish-List).Count -gt 0) {
+        } elseif ($P.kind -eq 'cat' -and $P.hunger -lt 40 -and ($Bowl.food -le 0 -or $FurnHide.feeder) -and @(Fish-List).Count -gt 0) {
             Start-Chase $P (Nearest-Fish $P) $true 500; Say $P '没饭了… 抓鱼吃!'          # 喂食器空了才吃鱼
+        } elseif ($P.energy -lt 20 -and $FurnHide.bed) {
+            $P.mode = 'sleep'; Say $P '窝不见了… 就睡这里吧' 60          # 窝收起来了: 在原地睡
         } elseif ($P.energy -lt 20) {
             Go-To $P ($bed.Left + $BW / 2 - $P.w / 2 + $rand.Next(-18, 19)) ($bed.Bottom - 12 - $YOFF - $P.sc * 136) 'sleep'; Say $P '困了…'
-        } elseif ($P.kind -eq 'dog' -and $P.energy -gt 25 -and $P.hunger -gt 0 -and $Clock.tick -gt $P.ballRest -and (Ball-Moving)) {
+        } elseif ($P.kind -eq 'dog' -and $P.energy -gt 25 -and $P.hunger -gt 0 -and $Clock.tick -gt $P.ballRest -and -not $FurnHide.ball -and (Ball-Moving)) {
             $P.mode = 'ball'; $P.kicks = 0; $P.chaseT = 500; Say $P '球! 汪汪!' 40
         }
     }
@@ -714,7 +716,7 @@ function Update-Pet($P) {
         }
         if ($rand.Next(1500) -eq 0) { Start-Trick $P; return }
         if ($rand.Next(2000) -eq 0) { $pal = Find-Pal $P; if ($pal) { Start-Friend $P $pal; return } }
-        if (($P.kind -eq 'dog' -or $P.kind -eq 'cat') -and $P.energy -gt 50 -and $Clock.tick -gt $P.ballRest -and -not (Ball-Moving) -and -not @($Pets | Where-Object { $_.mode -eq 'ball' }).Count -and $rand.Next($(if ($P.kind -eq 'dog') { 1000 } else { 2500 })) -eq 0) {
+        if (($P.kind -eq 'dog' -or $P.kind -eq 'cat') -and $P.energy -gt 50 -and $Clock.tick -gt $P.ballRest -and -not $FurnHide.ball -and -not (Ball-Moving) -and -not @($Pets | Where-Object { $_.mode -eq 'ball' }).Count -and $rand.Next($(if ($P.kind -eq 'dog') { 1000 } else { 2500 })) -eq 0) {
             $P.mode = 'ball'; $P.kicks = 0; $P.chaseT = 500; $P.state = 'walk'
             Say $P $(if ($P.kind -eq 'dog') { '玩球去~' } else { '球球… 拍一下!' }) 40; return
         }
@@ -732,7 +734,8 @@ function Update-Pet($P) {
         if ($P.x + $P.w -ge $wa.Right) { $P.x = $wa.Right - $P.w; $P.dir = -1 }
     }
     # 饿了但喂食器空了: 每 10 秒提醒主人
-    if ($P.hunger -lt 40 -and $Bowl.food -le 0 -and $P.msgT -eq 0 -and $Clock.tick % 250 -eq 0) {
+    if ($P.hunger -lt 40 -and ($Bowl.food -le 0 -or $FurnHide.feeder) -and $P.msgT -eq 0 -and $Clock.tick % 250 -eq 0) {
+        if ($FurnHide.feeder) { Say $P '喂食器不见了… 我好饿' 100; return }
         $HungryLines = @('我饿了… 呜呜', '喂食器空了! 快加饭~', '肚子咕咕叫…', '主人… 我好饿')
         Say $P $HungryLines[[int]($Clock.tick / 250) % $HungryLines.Count] 100
     }
@@ -775,7 +778,7 @@ function Doing($P) {
 
 # ---------- 鱼: 在屏幕下面三分之二游来游去; 猫会追, 饿了又没饭时会吃 ----------
 function Fish-Center($fish) { @(($fish.x + $fish.w / 2), ($fish.y + $YOFF + $fish.sc * 96)) }
-function Fish-List { @($Pets | Where-Object { $_.kind -eq 'fish' }) }
+function Fish-List { @($Pets | Where-Object { $_.kind -eq 'fish' -and -not $_.hidden }) }
 function Nearest-Fish($P) {
     $best = $null; $bestD = [double]::MaxValue
     foreach ($fish in (Fish-List)) {
@@ -850,7 +853,7 @@ function End-Chase($P) { $P.prey = $null; Land $P }
 
 function Update-Chase($P) {
     $fish = $P.prey
-    if (-not $fish -or -not $Pets.Contains($fish) -or $P.chaseT -le 0) {
+    if (-not $fish -or -not $Pets.Contains($fish) -or $fish.hidden -or $P.chaseT -le 0) {
         if ($P.chaseT -le 0) { Say $P $(if ($fish.kind -eq 'mouse') { '跑太快了… 不追了' } else { '游太快了… 不追了' }); if ($fish.kind -eq 'mouse') { $P.mouseRest = $Clock.tick + 500 } }
         End-Chase $P; return
     }
@@ -944,7 +947,7 @@ function Update-Mouse($P, $wa) {
         if ($P.x + $P.w -ge $wa.Right) { $P.x = $wa.Right - $P.w; $P.dir = -1 }
     }
 }
-function Mouse-List { @($Pets | Where-Object { $_.kind -eq 'mouse' }) }
+function Mouse-List { @($Pets | Where-Object { $_.kind -eq 'mouse' -and -not $_.hidden }) }
 function Nearest-Mouse($P) {                    # 最近的、还没被追的老鼠
     $best = $null; $bestD = [double]::MaxValue
     foreach ($m in (Mouse-List)) {
@@ -1164,6 +1167,7 @@ function Place-Ball {
     }
 }
 function Update-Ball {
+    if ($FurnHide.ball) { return }
     if ($Ball.drag -or -not (Ball-Moving)) { return }
     $wa = Ball-Area; $gy = $wa.Bottom - $Ball.r - 1
     $Ball.vy += 0.8                                            # 重力
@@ -1287,7 +1291,7 @@ function Add-Task($type, $pt, $folder) {
 }
 
 function Pet-Free($P) {
-    (-not $P.drag) -and (-not $P.stay) -and (-not $P.task) -and ($P.eatT -le 0) -and ($P.drinkT -le 0) -and ($P.patT -le 0) -and ($P.mode -ne 'sleep') -and ($P.mode -ne 'atFeeder') -and ($P.mode -ne 'goto') -and ($P.mode -ne 'chase') -and ($P.mode -ne 'ball') -and ($P.mode -ne 'trick') -and ($P.mode -ne 'friend') -and ($P.mode -ne 'fly') -and ($P.kind -ne 'fish') -and ($P.kind -ne 'mouse')
+    (-not $P.hidden) -and (-not $P.drag) -and (-not $P.stay) -and (-not $P.task) -and ($P.eatT -le 0) -and ($P.drinkT -le 0) -and ($P.patT -le 0) -and ($P.mode -ne 'sleep') -and ($P.mode -ne 'atFeeder') -and ($P.mode -ne 'goto') -and ($P.mode -ne 'chase') -and ($P.mode -ne 'ball') -and ($P.mode -ne 'trick') -and ($P.mode -ne 'friend') -and ($P.mode -ne 'fly') -and ($P.kind -ne 'fish') -and ($P.kind -ne 'mouse')
 }
 
 # 派离得最近、有空的宠物过去
@@ -1394,51 +1398,89 @@ function Add-MenuLabel($menu, $bold) {
     $lb
 }
 
+# 子菜单: 滑鼠指着才展开. 子菜单里的东西也能用 $src.Owner.Tag 拿到宠物
+function Add-SubMenu($menu, $text, $tag) {
+    $it = New-Object Windows.Forms.ToolStripMenuItem $text
+    [void]$menu.Items.Add($it)
+    $it.DropDown.Tag = $tag
+    $it.DropDown
+}
+
+# 「放出来 ▸」: 有东西关着才出现, 每次打开菜单都重新列出关着的宠物 / 收起来的东西
+function Add-ReleaseMenu($menu) {
+    $dd = Add-SubMenu $menu '放出来' $null
+    $dd.OwnerItem.Visible = $false
+    $menu.add_Opening({ param($src, $e) Fill-ReleaseMenu $src })
+}
+function Fill-ReleaseMenu($menu) {
+    $item = @($menu.Items | Where-Object { $_ -is [Windows.Forms.ToolStripMenuItem] -and $_.Text -like '放出来*' })[0]
+    if (-not $item) { return }
+    $dd = $item.DropDown; $dd.Items.Clear()
+    foreach ($p in @($Pets | Where-Object { $_.hidden -and -not $_.visitor })) {
+        $it = Add-MenuItem $dd "$($p.name)  ($(Kind-Label $p.kind $p.breed))" { param($src, $e) Show-Pet $src.Tag }; $it.Tag = $p
+    }
+    foreach ($fi in @(@('feeder', '喂食器'), @('bed', '窝'), @('ball', '球'))) {
+        if ($FurnHide[$fi[0]]) { $it = Add-MenuItem $dd $fi[1] { param($src, $e) Set-FurnHidden $src.Tag $false }; $it.Tag = $fi[0] }
+    }
+    $n = $dd.Items.Count
+    if ($n -gt 1) { [void]$dd.Items.Add((New-Object Windows.Forms.ToolStripSeparator)); [void](Add-MenuItem $dd '全部放出来' { Show-All }) }
+    $item.Text = "放出来 ($n)"
+    $item.Visible = ($n -gt 0)
+}
 function Build-PetMenu($P) {
     $m = New-Object Windows.Forms.ContextMenuStrip
     $m.Tag = $P
-    $P.lblName = Add-MenuLabel $m $true
+    $P.lblName = Add-MenuLabel $m $true                 # 名字 + 正在做什么
     $P.lblHunger = Add-MenuLabel $m $false
     $P.lblEnergy = Add-MenuLabel $m $false
     $P.lblLove = Add-MenuLabel $m $false
     $P.lblTime = Add-MenuLabel $m $false
-    $P.lblDoing = Add-MenuLabel $m $false
     [void]$m.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
+    $small = ($P.kind -eq 'fish' -or $P.kind -eq 'mouse')     # 鱼和老鼠不用吃饭睡觉, 不打扮
     [void](Add-MenuItem $m '摸摸' { param($src, $e) Pat $src.Owner.Tag })
-    $miSnack = Add-MenuItem $m '喂小零食' { param($src, $e) Snack $src.Owner.Tag }
-    $miSleep = Add-MenuItem $m '去睡觉' { param($src, $e) GoSleep $src.Owner.Tag }
-    if ($P.kind -eq 'fish' -or $P.kind -eq 'mouse') {      # 鱼和老鼠不用吃饭睡觉; 双击它们是叫猫 (狗) 来追
-        foreach ($it in @($P.lblHunger, $P.lblEnergy, $miSnack, $miSleep)) { $it.Visible = $false }
+    if ($small) {
         if ($P.kind -eq 'fish') { [void](Add-MenuItem $m '叫猫来追' { param($src, $e) Call-Cat $src.Owner.Tag }) }
         else { [void](Add-MenuItem $m '叫猫狗来追' { param($src, $e) Call-Chaser $src.Owner.Tag }) }
-    }
-    $stay = Add-MenuItem $m '待着别动' {}
+        foreach ($it in @($P.lblHunger, $P.lblEnergy)) { $it.Visible = $false }
+    } else { [void](Add-MenuItem $m '喂小零食' { param($src, $e) Snack $src.Owner.Tag }) }
+    Add-ReleaseMenu $m
+
+    $care = Add-SubMenu $m '照顾' $P
+    if (-not $small) { [void](Add-MenuItem $care '去睡觉' { param($src, $e) GoSleep $src.Owner.Tag }) }
+    $stay = Add-MenuItem $care '待着别动' {}
     $stay.CheckOnClick = $true
     $stay.add_CheckedChanged({ param($src, $e) $src.Owner.Tag.stay = $src.Checked })
-    [void]$m.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
-    $miPhoto = Add-MenuItem $m '换头像照片…' { param($src, $e) $P = $src.Owner.Tag; $bmp = Pick-Photo $P.form; if ($bmp) { Set-PetPhoto $P $bmp } }
-    $P.miNoPhoto = Add-MenuItem $m '拿掉照片' { param($src, $e) Set-PetPhoto $src.Owner.Tag $null }
-    $miClothes = Add-MenuItem $m '设计衣服 / 头饰…' { param($src, $e) Show-ClothesDialog $src.Owner.Tag }
-    $P.miNoClothes = Add-MenuItem $m '脱掉衣服' { param($src, $e) Set-PetClothes $src.Owner.Tag $null }
-    $P.miNoHat = Add-MenuItem $m '拿掉头饰' { param($src, $e) Set-PetHat $src.Owner.Tag $null }
-    if ($P.kind -eq 'fish' -or $P.kind -eq 'mouse') { $miClothes.Visible = $false; $miPhoto.Visible = $false }
-    [void](Add-MenuItem $m '加满喂食器' { Refill })
-    [void](Add-MenuItem $m '便条' { Show-Note })
-    [void](Add-MenuItem $m '定时提醒…' { Show-RemindersDialog })
-    $P.miTalk = Add-MenuItem $m '说话…' { param($src, $e) Show-Talk $src.Owner.Tag }
-    $P.miPair = Add-MenuItem $m '聊天配对…' { Show-Pair }
-    [void](Add-MenuItem $m '添加宠物…' { Show-AddPetDialog })
-    [void](Add-MenuItem $m "送走$($P.name)…" { param($src, $e) Remove-Pet $src.Owner.Tag })
+    [void](Add-MenuItem $care '加满喂食器' { Refill })
+
+    $dress = Add-SubMenu $m '打扮' $P
+    [void](Add-MenuItem $dress '换头像照片…' { param($src, $e) $P = $src.Owner.Tag; $bmp = Pick-Photo $P.form; if ($bmp) { Set-PetPhoto $P $bmp } })
+    $P.miNoPhoto = Add-MenuItem $dress '拿掉照片' { param($src, $e) Set-PetPhoto $src.Owner.Tag $null }
+    [void](Add-MenuItem $dress '设计衣服 / 头饰…' { param($src, $e) Show-ClothesDialog $src.Owner.Tag })
+    $P.miNoClothes = Add-MenuItem $dress '脱掉衣服' { param($src, $e) Set-PetClothes $src.Owner.Tag $null }
+    $P.miNoHat = Add-MenuItem $dress '拿掉头饰' { param($src, $e) Set-PetHat $src.Owner.Tag $null }
+    if ($small) { $dress.OwnerItem.Visible = $false }
+
+    $tools = Add-SubMenu $m '工具' $P
+    [void](Add-MenuItem $tools '便条' { Show-Note })
+    [void](Add-MenuItem $tools '定时提醒…' { Show-RemindersDialog })
+    $P.miTalk = Add-MenuItem $tools '说话…' { param($src, $e) Show-Talk $src.Owner.Tag }
+    $P.miPair = Add-MenuItem $tools '聊天配对…' { Show-Pair }
+
+    $pets = Add-SubMenu $m '宠物' $P
+    [void](Add-MenuItem $pets '添加宠物…' { Show-AddPetDialog })
+    [void](Add-MenuItem $pets "把$($P.name)关起来" { param($src, $e) Hide-Pet $src.Owner.Tag })
+    [void](Add-MenuItem $pets '全部关起来 (关掉程序)' { Hide-All })
+    [void](Add-MenuItem $pets "送走$($P.name)…" { param($src, $e) Remove-Pet $src.Owner.Tag })
+
     [void]$m.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
     [void](Add-MenuItem $m '退出' { Quit })
     $m.add_Opening({ param($src, $e)
         $P = $src.Tag
-        $P.lblName.Text = "$($P.name)  ($(Kind-Label $P.kind $P.breed))"
+        $P.lblName.Text = "$($P.name)  ($(Kind-Label $P.kind $P.breed))  ·  正在$(Doing $P)"
         $P.lblHunger.Text = '饱食度  ' + (Meter $P.hunger)
         $P.lblEnergy.Text = '精力      ' + (Meter $P.energy)
         $P.lblLove.Text = '亲密度  ' + (Meter $P.love)
         $P.lblTime.Text = '陪伴时间  ' + (Format-Time $P.playSec)
-        $P.lblDoing.Text = '正在' + (Doing $P)
         $P.miNoPhoto.Visible = [bool]$P.photo
         $P.miNoClothes.Visible = [bool]$P.clothes
         $P.miNoHat.Visible = [bool]$P.hat
@@ -2178,7 +2220,7 @@ function New-PetLook($name, $kind, $breed, $colorName, $photo = $null) {
     $P
 }
 
-function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $photoFile = '', $clothesFile = '', $hatFile = '') {
+function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $photoFile = '', $clothesFile = '', $hatFile = '', $hidden = $false) {
     $ph = Load-Photo $photoFile
     $P = New-PetLook $name $kind $breed $colorName $ph
     $more = @{
@@ -2192,7 +2234,8 @@ function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $pho
         fleeT = 0; chaser = $null; swim = $null                  # 鱼: 逃跑 / 要游去哪里
         hover = $false                                           # 滑鼠指着它
         mouseRest = 0                                            # 追完老鼠休息一下
-        trick = ''; trickT = 0; trickLen = 1; game = $null; jumpT = 0   # 自己玩的把戏 / 跟朋友玩 / 跳起来抓蝴蝶
+        trick = ''; trickT = 0; trickLen = 1; game = $null; jumpT = 0
+        hidden = [bool]$hidden                                    # 关起来了 (右下角图标可以放出来)   # 自己玩的把戏 / 跟朋友玩 / 跳起来抓蝴蝶
         chat = $null; visitor = $false; visitorUntil = 0         # 头上的对话框 / 是不是朋友的宠物来串门
         love = [Math]::Max(5, [int]$love); playSec = [int]$playSec      # 亲密度 0-100, 陪伴秒数
         photoFile = $(if ($P.photo) { [string]$photoFile } else { '' })   # 照片文件名 (在 photos 文件夹)
@@ -2245,7 +2288,7 @@ function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $pho
     $fm.Location = New-Object Drawing.Point([int]$P.x, [int]$P.y)
     [void]$Pets.Add($P)
     Say $P "嗨! 我是$name~" 100
-    if ($Live) { $fm.Show() }
+    if ($Live -and -not $P.hidden) { $fm.Show() }
     $P
 }
 
@@ -2266,7 +2309,7 @@ function Save-Pets {
 function Load-Pets {
     if (Test-Path $DataFile) {
         $data = Get-Content -Raw -Encoding UTF8 $DataFile | ConvertFrom-Json
-        foreach ($d in $data) { [void](New-Pet $d.name $d.kind $d.color $d.breed $d.love $d.playSec $d.photo $d.clothes $d.hat) }
+        foreach ($d in $data) { [void](New-Pet $d.name $d.kind $d.color $d.breed $d.love $d.playSec $d.photo $d.clothes $d.hat) }      # 关起来的不记住: 每次打开大家都出来
     }
     if ($Pets.Count -eq 0) { [void](New-Pet '咪咪' 'cat' '橘色'); Save-Pets }
 }
@@ -2406,9 +2449,16 @@ $lblWater = Add-MenuLabel $feederMenu $false
 $lblAuto = Add-MenuLabel $feederMenu $false
 [void]$feederMenu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
 [void](Add-MenuItem $feederMenu '加满饭和水' { Refill })
-[void](Add-MenuItem $feederMenu '便条' { Show-Note })
-[void](Add-MenuItem $feederMenu '定时提醒…' { Show-RemindersDialog })
-[void](Add-MenuItem $feederMenu '聊天配对…' { Show-Pair })
+Add-ReleaseMenu $feederMenu
+$fTools = Add-SubMenu $feederMenu '工具' $null
+[void](Add-MenuItem $fTools '便条' { Show-Note })
+[void](Add-MenuItem $fTools '定时提醒…' { Show-RemindersDialog })
+[void](Add-MenuItem $fTools '聊天配对…' { Show-Pair })
+$fAway = Add-SubMenu $feederMenu '收起来' $null
+[void](Add-MenuItem $fAway '收起喂食器' { Set-FurnHidden 'feeder' $true })
+[void](Add-MenuItem $fAway '收起窝' { Set-FurnHidden 'bed' $true })
+[void](Add-MenuItem $fAway '收起球' { Set-FurnHidden 'ball' $true })
+[void](Add-MenuItem $fAway '全部关起来 (关掉程序)' { Hide-All })
 [void](Add-MenuItem $feederMenu '添加宠物…' { Show-AddPetDialog })
 [void]$feederMenu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
 [void](Add-MenuItem $feederMenu '退出' { Quit })
@@ -2418,6 +2468,17 @@ $feederMenu.add_Opening({
     $lblAuto.Text = AutoRefill-Text; $lblAuto.Visible = [bool]$lblAuto.Text
 })
 $feeder.ContextMenuStrip = $feederMenu
+
+# 窝和球也有右键菜单: 收起来 (右下角图标可以拿回来)
+$bedMenu = New-Object Windows.Forms.ContextMenuStrip
+[void](Add-MenuItem $bedMenu '收起窝' { Set-FurnHidden 'bed' $true })
+[void](Add-MenuItem $bedMenu '全部关起来 (关掉程序)' { Hide-All })
+Add-ReleaseMenu $bedMenu
+$bed.ContextMenuStrip = $bedMenu
+$ballMenu = New-Object Windows.Forms.ContextMenuStrip
+[void](Add-MenuItem $ballMenu '收起球' { Set-FurnHidden 'ball' $true })
+[void](Add-MenuItem $ballMenu '全部关起来 (关掉程序)' { Hide-All })
+Add-ReleaseMenu $ballMenu
 
 $wa0 = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $feeder.Location = New-Object Drawing.Point(($wa0.Right - $FW - 10), ($wa0.Bottom - $FH))
@@ -2450,6 +2511,7 @@ foreach ($furnForm in @($feeder, $bed)) {
         Save-Layout
     })
 }
+$FurnHide = @{ feeder = $false; bed = $false; ball = $false }      # 收起来的东西
 function Save-Layout {
     if (-not $Live) { return }
     $o = [ordered]@{ feederX = $feeder.Left; feederY = $feeder.Top; bedX = $bed.Left; bedY = $bed.Top }
@@ -2470,6 +2532,7 @@ Load-Layout
 $Ball.form = New-PetWindow 28 28
 $Ball.form.Owner = $bed
 $Ball.form.Cursor = [Windows.Forms.Cursors]::Hand
+$Ball.form.ContextMenuStrip = $ballMenu
 $Ball.x = $bed.Left - 40; $Ball.y = $wa0.Bottom - $Ball.r - 1
 $Ball.form.add_Paint({ param($src, $e) Draw-Ball $e.Graphics })
 $Ball.form.add_MouseDown({ param($src, $e)
@@ -2507,6 +2570,96 @@ $Fly.form = New-PetWindow 34 30
 $Fly.form.Owner = $bed
 $Fly.form.add_Paint({ param($src, $e) Draw-Butterfly $e.Graphics })
 
+# ---------- 关起来 / 放出来: 宠物、喂食器、窝、球都可以先收起来, 右下角图标再放出来 ----------
+function Hide-Pet($P) {
+    if ($P.hidden) { return }
+    if (-not $P.visitor -and (Visible-Count) -le 1) { [void](Close-AllAway); return }   # 最后一个也要关: 等于全部关起来
+    if ($P.game) { End-Friend $P.game $false }
+    Requeue-Task $P
+    if ($P.chat -and -not $P.chat.form.IsDisposed) { $P.chat.form.Close() }; $P.chat = $null
+    $P.mode = 'idle'; $P.modeT = 40; $P.prey = $null; $P.eatT = 0; $P.drinkT = 0; $P.patT = 0; $P.jumpT = 0; $P.drag = $false; $P.hover = $false
+    $P.hidden = $true
+    $P.form.Hide()
+    Save-Pets
+}
+function Show-Pet($P) {
+    if (-not $P.hidden) { return }
+    $P.hidden = $false
+    $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $P.x = [Math]::Min([Math]::Max($P.x, $wa.Left), $wa.Right - $P.w)
+    $P.y = if ($P.kind -eq 'fish') { $wa.Top + [int]($wa.Height * 0.6) } else { $wa.Bottom - $P.h }
+    $P.form.Location = New-Object Drawing.Point([int]$P.x, [int]$P.y)
+    if ($Live) { $P.form.Show() }
+    Say $P '我回来啦!' 75
+    Save-Pets
+}
+function Set-FurnHidden($which, $hide) {
+    if ($hide -and -not $FurnHide[$which] -and (Visible-Count) -le 1) { [void](Close-AllAway); return }   # 最后一个了
+    $FurnHide[$which] = [bool]$hide
+    $fm = switch ($which) { 'feeder' { $feeder } 'bed' { $bed } 'ball' { $Ball.form } }
+    if ($hide) { $fm.Hide() } elseif ($Live) { $fm.Show() }
+    if ($hide -and $which -eq 'feeder') {                    # 正在吃 / 走去吃的宠物停下来
+        foreach ($P in @($Pets)) { if ($P.mode -eq 'atFeeder' -or ($P.mode -eq 'goto' -and ($P.next -eq 'eat' -or $P.next -eq 'drink'))) { $P.mode = 'idle'; $P.modeT = 40; $P.eatT = 0; $P.drinkT = 0 } }
+    }
+    if ($hide -and $which -eq 'bed') {                       # 走去窝的宠物: 就地睡
+        foreach ($P in @($Pets)) { if ($P.mode -eq 'goto' -and $P.next -eq 'sleep') { $P.mode = 'sleep' } }
+    }
+    if ($which -eq 'ball') { $Ball.vx = 0; $Ball.vy = 0; $Ball.drag = $false; if (-not $hide) { Place-Ball } }
+    Save-Layout
+}
+# 全部关起来 = 关掉程序. 下次打开时大家都会出来 (不然什么都看不到, 不知道怎么开回去)
+function Visible-Count { @($Pets | Where-Object { -not $_.visitor -and -not $_.hidden }).Count + @(@('feeder', 'bed', 'ball') | Where-Object { -not $FurnHide[$_] }).Count }
+function Close-AllAway {                                              # 直接退出, 不用问
+    Quit
+    $true
+}
+function Hide-All { [void](Close-AllAway) }
+function Show-All {
+    foreach ($k in @('feeder', 'bed', 'ball')) { if ($FurnHide[$k]) { Set-FurnHidden $k $false } }
+    foreach ($P in @($Pets)) { Show-Pet $P }
+}
+function Anything-Hidden { (@($Pets | Where-Object { $_.hidden }).Count -gt 0) -or $FurnHide.feeder -or $FurnHide.bed -or $FurnHide.ball }
+
+# 右下角的小图标: 右键 = 菜单, 双击 = 全部关起来 / 全部放出来
+function Make-TrayIcon {
+    $L = New-PetLook '' 'cat' '' '橘色'; $L.frame = 30; $L.msgT = 0
+    $b = New-Object Drawing.Bitmap(64, 64); $gr = [Drawing.Graphics]::FromImage($b)
+    $gr.TranslateTransform(-7.5, -10); $gr.ScaleTransform(0.6, 0.6)
+    $saveLabel = ${function:Label}; ${function:Label} = {}
+    try { Draw-Pet $L $gr } finally { ${function:Label} = $saveLabel; $gr.Dispose() }
+    [Drawing.Icon]::FromHandle($b.GetHicon())
+}
+function Build-TrayMenu($m) {
+    $m.Items.Clear()
+    $all = Add-MenuItem $m '全部放出来' { Show-All }; $all.Enabled = (Anything-Hidden)
+    [void](Add-MenuItem $m '全部关起来 (关掉程序)' { Hide-All })
+    [void]$m.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
+    $nHidden = @($Pets | Where-Object { -not $_.visitor -and $_.hidden }).Count
+    $pm = Add-SubMenu $m $(if ($nHidden) { "宠物 ($nHidden 只关着)" } else { '宠物' }) $null      # 打勾 = 在外面, 点一下关起来 / 放出来
+    foreach ($P in @($Pets | Where-Object { -not $_.visitor })) {
+        $it = Add-MenuItem $pm "$($P.name)  ($(Kind-Label $P.kind $P.breed))" { param($src, $e) $p = $src.Tag; if ($p.hidden) { Show-Pet $p } else { Hide-Pet $p } }
+        $it.Tag = $P; $it.Checked = -not $P.hidden
+    }
+    $fm2 = Add-SubMenu $m '喂食器 / 窝 / 球' $null
+    foreach ($fi in @(@('feeder', '喂食器'), @('bed', '窝'), @('ball', '球'))) {
+        $it = Add-MenuItem $fm2 $fi[1] { param($src, $e) Set-FurnHidden $src.Tag (-not $FurnHide[$src.Tag]) }
+        $it.Tag = $fi[0]; $it.Checked = -not $FurnHide[$fi[0]]
+    }
+    $tm2 = Add-SubMenu $m '工具' $null
+    [void](Add-MenuItem $tm2 '便条' { Show-Note })
+    [void](Add-MenuItem $tm2 '定时提醒…' { Show-RemindersDialog })
+    [void](Add-MenuItem $tm2 '添加宠物…' { Show-AddPetDialog })
+    [void]$m.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
+    [void](Add-MenuItem $m '退出' { Quit })
+}
+$Tray = New-Object Windows.Forms.NotifyIcon
+$Tray.Text = 'Laptop Pet'
+$Tray.Icon = Make-TrayIcon
+$trayMenu = New-Object Windows.Forms.ContextMenuStrip
+[void]$trayMenu.Items.Add('…')                              # 先放一个, 打开时再换成真的
+$trayMenu.add_Opening({ param($src, $e) Build-TrayMenu $src; $e.Cancel = $false })
+$Tray.ContextMenuStrip = $trayMenu
+$Tray.add_MouseDoubleClick({ param($src, $e) if ($e.Button -eq 'Left') { if (Anything-Hidden) { Show-All } else { Hide-All } } })
 # ---------- 便条: 放在右边, 拉边框可以调大小, 写的东西自动存 ----------
 $NoteFile = Join-Path $PSScriptRoot 'note.json'
 $NoteState = @{ dirty = $false }
@@ -2830,9 +2983,13 @@ function Check-Reminders {
 }
 # 选一只宠物 (猫狗兔优先), 跑到屏幕中间, 对话框显示 1 分钟, 叮一声
 function Fire-Reminder($r) {
-    $pp = @($Pets | Where-Object { -not $_.visitor -and $_.kind -ne 'fish' -and $_.kind -ne 'mouse' })
-    if (-not $pp.Count) { $pp = @($Pets | Where-Object { -not $_.visitor }) }
-    if (-not $pp.Count) { return }
+    $pp = @($Pets | Where-Object { -not $_.visitor -and -not $_.hidden -and $_.kind -ne 'fish' -and $_.kind -ne 'mouse' })
+    if (-not $pp.Count) { $pp = @($Pets | Where-Object { -not $_.visitor -and -not $_.hidden }) }
+    if (-not $pp.Count) {                                     # 宠物都关起来了: 用右下角图标的通知
+        if ($Tray) { $Tray.ShowBalloonTip(10000, "$($r.time) 提醒", $r.text, 'Info') }
+        if ($Reminders.sound) { [Media.SystemSounds]::Asterisk.Play() }
+        return
+    }
     $P = $pp[$rand.Next($pp.Count)]
     Show-Chat $P "$($r.time) 提醒" $r.text 1500
     if ($Reminders.sound) { [Media.SystemSounds]::Asterisk.Play() }
@@ -2892,7 +3049,7 @@ function Show-RemindersDialog {
 }
 
 # ---------- 自动更新: 从 GitHub 拿新版本, 签名对得上才装 (只有 exe 装的才会更新) ----------
-$AppVersion = 7
+$AppVersion = 8
 $UpdateUrl = 'https://raw.githubusercontent.com/Huiyung99/Laptop-Pet/main/update/'
 $UpdatePubKey = '<RSAKeyValue><Modulus>m43v3YuEWypkH3H1iwF1Rpq0HXVYexJsmpTLMkqTZ+hww+h67OiiaNd8pFFEOGg+TZ1qwLloQW3F/d8wT80XWcx/77qGAfMHjiT2M40jv5kF4fCo9K+AEI9qJvBpGcGW+IukbdHKdi4roQmHiTqF+ShI1U8UueKNzvgGQIsj+eWlZY5jsyKKfz9QTX8pYQEYF8IMUxvMoYSgvNXZLaT4AO0rmYGWlCmn54bW7gZpHLz71PGKeGPAfm8YqbkStyXCFdSE7gP1pthYSZ6CuFF0ev4fXB84nYMNHSq37vcYm5y5gOmW40cszDYHubDbEm1+xsfJKHwy1eqhjL4Xb4VD0h0EnU44U7TQfKyFKJvC5Dj1PfLbMomASjdCPMucFTEwp/UqTI0niuMamv8Y/GbPg+jQm+vGvApN9FZD3b8rnEZyHe9iW0uQJ0pb1lJK80Yrls6JlzF0Cqq+fa7w9U2S21byal0Sr/VUzPVnKdtKx1Prc2X0thLlP73LWHHe2rSh</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LaptopPet'
@@ -2942,6 +3099,7 @@ function Check-Update {
 }
 function Restart-App($script) {
     Save-Pets; Save-Note; Save-Chat; Stop-Chat
+    if ($Mtx) { $Mtx.ReleaseMutex(); $Mtx.Dispose(); $Mtx = $null }      # 先放掉, 新的才开得起来
     Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`""
     [Windows.Forms.Application]::Exit()
 }
@@ -2961,6 +3119,7 @@ $timer.add_Tick({
     $Clock.tick++
     foreach ($P in @($Pets)) {
         if ($P.form.IsDisposed) { continue }      # 刚被送走 / 被吃掉
+        if ($P.hidden) { continue }               # 关起来了: 不动、不饿、不累
         if ($P.visitor -and $Clock.tick -gt $P.visitorUntil) { $P.form.Close(); $P.form.Dispose(); continue }   # 朋友的宠物回家了
         if ($P.hover -and -not $P.form.Bounds.Contains([Windows.Forms.Cursor]::Position)) { $P.hover = $false }   # 以防没收到滑鼠离开
         $P.frame++
@@ -2980,6 +3139,7 @@ $timer.add_Tick({
     if ($Clock.tick % 25 -eq 13) { Poll-Desktop }       # 每秒看一次桌面
     if ($Clock.tick % 25 -eq 7) { Check-AutoRefill }    # 喂食器空了 15 分钟主人都没加, 就自己加满
     if ($Clock.tick % 25 -eq 19) { Check-Reminders }    # 定时提醒
+    if ($Clock.tick % 25 -eq 3 -and $Wake -and $Wake.WaitOne(0)) { Show-All; $P = @($Pets | Where-Object { -not $_.visitor })[0]; if ($P) { Say $P '我在这里!' 100 } }   # 又按了一次打开
     Update-Ball
     Update-Fly
     Assign-Tasks
@@ -2992,7 +3152,13 @@ $timer.add_Tick({
 })
 
 if ($Live) {
-    $feeder.Show(); $bed.Show(); $Ball.form.Show()
+    # 只开一个: 已经在跑的话, 叫那个把大家都放出来, 这个就不开了
+    $firstRun = $false
+    $Mtx = New-Object Threading.Mutex($true, 'LaptopPet_SingleInstance', [ref]$firstRun)
+    $Wake = New-Object Threading.EventWaitHandle($false, 'AutoReset', 'LaptopPet_Wake')
+    if (-not $firstRun) { [void]$Wake.Set(); $Tray.Dispose(); exit }
+    if (-not $FurnHide.feeder) { $feeder.Show() }; if (-not $FurnHide.bed) { $bed.Show() }; if (-not $FurnHide.ball) { $Ball.form.Show() }
+    $Tray.Visible = $true
     Load-Pets
     Load-Note
     Load-Chat
@@ -3002,4 +3168,5 @@ if ($Live) {
     [Windows.Forms.Application]::Run()
     $timer.Stop()
     Stop-Chat
+    $Tray.Visible = $false; $Tray.Dispose()          # 不然右下角会留一个没用的图标
 }
