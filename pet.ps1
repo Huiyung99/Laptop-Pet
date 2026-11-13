@@ -1492,7 +1492,6 @@ function Build-PetMenu($P) {
 
     $games = Add-SubMenu $m '玩游戏' $P
     [void](Add-MenuItem $games '井字棋…' { param($src, $e) Show-TicTacToe $src.Owner.Tag })
-    [void](Add-MenuItem $games '石头剪刀布…' { param($src, $e) Show-RPS $src.Owner.Tag })
     [void](Add-MenuItem $games '翻牌配对…' { param($src, $e) Show-Memory $src.Owner.Tag })
     [void](Add-MenuItem $games '打老鼠…' { param($src, $e) Show-Whack $src.Owner.Tag })
 
@@ -3134,48 +3133,6 @@ function New-GameLabel($x, $y, $lw, $lh, $size = 9) {
 }
 function Pet-Cheer($P) { if ($P.kind -eq 'dog') { '汪汪!' } elseif ($P.kind -eq 'cat') { '喵~' } else { '嘿嘿!' } }
 
-# ---------- 石头剪刀布: 宠物会记你上一次出什么, 有时候专门出赢你的 ----------
-$RPSNames = @('石头', '剪刀', '布')          # 0 赢 1, 1 赢 2, 2 赢 0
-function Show-RPS($P) {
-    $d = New-GameForm "跟 $($P.name) 玩石头剪刀布" 320 250
-    $st = @{ pet = $P; me = 0; it = 0; draw = 0; last = -1; rounds = 0; pick = -1 }
-    $st.lb = New-GameLabel 10 8 300 24; $st.lb.Text = '出拳吧!'
-    $st.show = New-GameLabel 10 36 300 60 16; $st.show.Text = "你  ?    VS    ?  $($P.name)"
-    $st.res = New-GameLabel 10 98 300 26 11
-    $st.score = New-GameLabel 10 215 300 22
-    $st.btns = @()
-    for ($i = 0; $i -lt 3; $i++) {
-        $bt = New-Object Windows.Forms.Button; $bt.Text = $RPSNames[$i]; $bt.SetBounds((22 + $i * 96), 140, 84, 60)
-        $bt.Font = New-Object Drawing.Font('Microsoft YaHei UI', 12, [Drawing.FontStyle]::Bold)
-        $bt.Tag = @{ st = $st; i = $i }
-        $bt.add_Click({ param($src, $e) RPS-Throw $src.Tag.st $src.Tag.i })
-        $st.btns += $bt
-    }
-    $st.tm = New-Object Windows.Forms.Timer; $st.tm.Interval = 450; $st.tm.Tag = $st
-    $st.tm.add_Tick({ param($src, $e) $src.Stop(); RPS-Reveal $src.Tag })
-    $d.Controls.AddRange(@($st.lb, $st.show, $st.res, $st.score) + $st.btns); $d.Tag = $st
-    try { [void]$d.ShowDialog() } finally { $st.tm.Stop(); $st.tm.Dispose(); $d.Dispose() }
-}
-function RPS-Throw($st, $i) {
-    $st.pick = $i
-    foreach ($b in $st.btns) { $b.Enabled = $false }
-    $st.show.Text = "你 $($RPSNames[$i])    VS    …  $($st.pet.name)"; $st.res.Text = '石头… 剪刀… 布!'
-    $st.tm.Start()
-}
-function RPS-Reveal($st) {
-    $me = $st.pick; $P = $st.pet
-    $pet = if ($st.last -ge 0 -and $rand.Next(100) -lt 40) { ($st.last + 2) % 3 } else { $rand.Next(3) }   # 猜你会出一样的, 出赢它的
-    $st.last = $me
-    $st.show.Text = "你 $($RPSNames[$me])    VS    $($RPSNames[$pet])  $($P.name)"
-    if ($me -eq $pet) { $st.draw++; $st.res.Text = '平手!'; $st.res.ForeColor = [Drawing.Color]::Gray }
-    elseif ((($me + 1) % 3) -eq $pet) { $st.me++; $st.res.Text = '你赢了!'; $st.res.ForeColor = [Drawing.Color]::RoyalBlue; Say $P '哼, 再来!' 75 }
-    else { $st.it++; $st.res.Text = "$($P.name) 赢了!"; $st.res.ForeColor = [Drawing.Color]::DarkOrange; Say $P "我赢啦! $(Pet-Cheer $P)" 75 }
-    $st.rounds++; if ($st.rounds % 3 -eq 0) { Add-Love $P 5 }      # 每玩 3 次 +5 亲密度
-    $st.score.Text = "你 $($st.me) : $($st.it) $($P.name)   (平手 $($st.draw))"
-    $st.lb.Text = '再出一次吧!'
-    foreach ($b in $st.btns) { $b.Enabled = $true }
-}
-
 # ---------- 翻牌配对: 你和宠物轮流翻两张, 一样就拿走再翻. 宠物记性不错 (看过的牌大概记得 70%) ----------
 function Show-Memory($P) {
     $d = New-GameForm "跟 $($P.name) 玩翻牌配对" 336 390
@@ -3459,7 +3416,7 @@ function Show-RemindersDialog {
 }
 
 # ---------- 自动更新: 从 GitHub 拿新版本, 签名对得上才装 (只有 exe 装的才会更新) ----------
-$AppVersion = 11
+$AppVersion = 12
 $UpdateUrl = 'https://raw.githubusercontent.com/Huiyung99/Laptop-Pet/main/update/'
 $UpdatePubKey = '<RSAKeyValue><Modulus>m43v3YuEWypkH3H1iwF1Rpq0HXVYexJsmpTLMkqTZ+hww+h67OiiaNd8pFFEOGg+TZ1qwLloQW3F/d8wT80XWcx/77qGAfMHjiT2M40jv5kF4fCo9K+AEI9qJvBpGcGW+IukbdHKdi4roQmHiTqF+ShI1U8UueKNzvgGQIsj+eWlZY5jsyKKfz9QTX8pYQEYF8IMUxvMoYSgvNXZLaT4AO0rmYGWlCmn54bW7gZpHLz71PGKeGPAfm8YqbkStyXCFdSE7gP1pthYSZ6CuFF0ev4fXB84nYMNHSq37vcYm5y5gOmW40cszDYHubDbEm1+xsfJKHwy1eqhjL4Xb4VD0h0EnU44U7TQfKyFKJvC5Dj1PfLbMomASjdCPMucFTEwp/UqTI0niuMamv8Y/GbPg+jQm+vGvApN9FZD3b8rnEZyHe9iW0uQJ0pb1lJK80Yrls6JlzF0Cqq+fa7w9U2S21byal0Sr/VUzPVnKdtKx1Prc2X0thLlP73LWHHe2rSh</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LaptopPet'
