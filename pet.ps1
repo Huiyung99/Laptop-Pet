@@ -814,6 +814,11 @@ function Draw-Fish($P, $g, $f, $st) {
 
 function Update-Fish($P, $wa) {
     if ($P.drag) { $P.state = 'drag'; return }
+    if ($P.dashV -gt 0.3) {                     # 被点了一下: 咻~ 往前冲一点点
+        $P.state = 'walk'; $P.x += $P.dir * $P.dashV; $P.dashV *= 0.85
+        $P.x = [Math]::Min([Math]::Max($P.x, $wa.Left), $wa.Right - $P.w)
+        return
+    }
     if ($P.patT -gt 0) { $P.patT--; $P.state = 'pat'; return }
     if ($P.hover) { $P.state = 'idle'; return }                 # 被滑鼠指着: 停下来不动
     $P.state = 'walk'
@@ -841,6 +846,14 @@ function Update-Fish($P, $wa) {
     $d = [Math]::Max(1, [Math]::Sqrt($dx * $dx + $dy * $dy))
     $P.x += $dx / $d * 1.2; $P.y += $dy / $d * 1.2
     if ([Math]::Abs($dx) -gt 3) { $P.dir = [Math]::Sign($dx) }
+}
+
+function Fish-Dash($P) {
+    $wa = [Windows.Forms.Screen]::FromControl($P.form).WorkingArea
+    if ($P.dir -eq 0) { $P.dir = 1 }
+    if (($P.dir -gt 0 -and $P.x + $P.w + 60 -gt $wa.Right) -or ($P.dir -lt 0 -and $P.x - 60 -lt $wa.Left)) { $P.dir = -$P.dir }   # 前面是墙: 掉头冲
+    $P.dashV = 10                                # 加起来大概冲 60 多 px
+    $P.swim = @(($P.x + $P.dir * 160), $P.y)      # 冲完继续往前游, 不要马上回头
 }
 
 # ---------- 猫追鱼 ----------
@@ -1406,6 +1419,31 @@ function Add-SubMenu($menu, $text, $tag) {
     $it.DropDown
 }
 
+# 开机自动打开: 开电脑后自己出来 (Windows 的「启动」清单里放一个看不见窗口的小脚本)
+$AutoStart = @{ on = $true }
+$SelfPath = $PSCommandPath
+$RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+function Set-AutoStart($on) {
+    $AutoStart.on = [bool]$on
+    if (-not $Live) { return }
+    $vbs = Join-Path $PSScriptRoot 'autostart.vbs'
+    try {
+        if ($on) {
+            $line = 'CreateObject("WScript.Shell").Run "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File ""' + $SelfPath + '""", 0, False'
+            [IO.File]::WriteAllText($vbs, $line, [Text.Encoding]::Unicode)
+            Set-ItemProperty -Path $RunKey -Name 'LaptopPet' -Value "wscript.exe `"$vbs`""
+        } else {
+            Remove-ItemProperty -Path $RunKey -Name 'LaptopPet' -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $vbs -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+function Add-AutoStartItem($menu) {                  # 打勾 = 开机会自己打开
+    $it = Add-MenuItem $menu '开机自动打开' { Set-AutoStart (-not $AutoStart.on); Save-Layout }
+    $it.Checked = $AutoStart.on
+    $menu.add_Opening({ param($src, $e) foreach ($x in $src.Items) { if ($x.Text -eq '开机自动打开') { $x.Checked = $AutoStart.on } } })
+}
+
 # 「放出来 ▸」: 有东西关着才出现, 每次打开菜单都重新列出关着的宠物 / 收起来的东西
 function Add-ReleaseMenu($menu) {
     $dd = Add-SubMenu $menu '放出来' $null
@@ -1465,6 +1503,7 @@ function Build-PetMenu($P) {
     [void](Add-MenuItem $tools '定时提醒…' { Show-RemindersDialog })
     $P.miTalk = Add-MenuItem $tools '说话…' { param($src, $e) Show-Talk $src.Owner.Tag }
     $P.miPair = Add-MenuItem $tools '聊天配对…' { Show-Pair }
+    Add-AutoStartItem $tools
 
     $pets = Add-SubMenu $m '宠物' $P
     [void](Add-MenuItem $pets '添加宠物…' { Show-AddPetDialog })
@@ -2253,7 +2292,7 @@ function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $pho
     $fm.add_MouseDown({ param($src, $e)
         if ($e.Button -eq 'Left') {
             $P = $src.Tag; $cur = [Windows.Forms.Cursor]::Position
-            $P.drag = $true; $P.offX = $cur.X - $src.Left; $P.offY = $cur.Y - $src.Top
+            $P.drag = $true; $P.offX = $cur.X - $src.Left; $P.offY = $cur.Y - $src.Top; $P.downAt = $src.Location
             $P.eatT = 0; $P.drinkT = 0
             Requeue-Task $P
         }
@@ -2271,6 +2310,7 @@ function New-Pet($name, $kind, $colorName, $breed, $love = 0, $playSec = 0, $pho
         $P = $src.Tag
         if ($e.Button -eq 'Left' -and $P.drag) {
             $P.drag = $false
+            if ($P.kind -eq 'fish' -and $src.Location -eq $P.downAt) { Fish-Dash $P }   # 鱼: 只是点一下 (没拖), 咻~
             Clamp-ToScreen $P
             $P.mode = 'idle'; $P.modeT = 80
         }
@@ -2303,15 +2343,20 @@ function Remove-Pet($P) {
 
 function Save-Pets {
     if (-not $Live) { return }
-    $list = @($Pets | Where-Object { -not $_.visitor } | ForEach-Object { [pscustomobject]@{ name = $_.name; kind = $_.kind; breed = $_.breed; color = $_.color; love = $_.love; playSec = $_.playSec; photo = $_.photoFile; clothes = $_.clothesFile; hat = $_.hatFile } })
+    $list = @($Pets | Where-Object { -not $_.visitor } | ForEach-Object { [pscustomobject]@{ name = $_.name; kind = $_.kind; breed = $_.breed; color = $_.color; love = $_.love; playSec = $_.playSec; photo = $_.photoFile; clothes = $_.clothesFile; hat = $_.hatFile; hidden = [bool]$_.hidden } })
     ConvertTo-Json -InputObject $list | Set-Content -Path $DataFile -Encoding UTF8
 }
 function Load-Pets {
     if (Test-Path $DataFile) {
         $data = Get-Content -Raw -Encoding UTF8 $DataFile | ConvertFrom-Json
-        foreach ($d in $data) { [void](New-Pet $d.name $d.kind $d.color $d.breed $d.love $d.playSec $d.photo $d.clothes $d.hat) }      # 关起来的不记住: 每次打开大家都出来
+        foreach ($d in $data) { [void](New-Pet $d.name $d.kind $d.color $d.breed $d.love $d.playSec $d.photo $d.clothes $d.hat ([bool]$d.hidden)) }      # 上次关着的继续关着
     }
     if ($Pets.Count -eq 0) { [void](New-Pet '咪咪' 'cat' '橘色'); Save-Pets }
+    if (-not @($Pets | Where-Object { -not $_.hidden }).Count) {          # 全部都关着: 至少放一只出来
+        $P = @($Pets | Where-Object { $_.kind -ne 'fish' -and $_.kind -ne 'mouse' })[0]
+        if (-not $P) { $P = $Pets[0] }
+        Show-Pet $P
+    }
 }
 
 # ---------- 添加宠物窗口 ----------
@@ -2454,6 +2499,7 @@ $fTools = Add-SubMenu $feederMenu '工具' $null
 [void](Add-MenuItem $fTools '便条' { Show-Note })
 [void](Add-MenuItem $fTools '定时提醒…' { Show-RemindersDialog })
 [void](Add-MenuItem $fTools '聊天配对…' { Show-Pair })
+Add-AutoStartItem $fTools
 $fAway = Add-SubMenu $feederMenu '收起来' $null
 [void](Add-MenuItem $fAway '收起喂食器' { Set-FurnHidden 'feeder' $true })
 [void](Add-MenuItem $fAway '收起窝' { Set-FurnHidden 'bed' $true })
@@ -2514,7 +2560,8 @@ foreach ($furnForm in @($feeder, $bed)) {
 $FurnHide = @{ feeder = $false; bed = $false; ball = $false }      # 收起来的东西
 function Save-Layout {
     if (-not $Live) { return }
-    $o = [ordered]@{ feederX = $feeder.Left; feederY = $feeder.Top; bedX = $bed.Left; bedY = $bed.Top }
+    $o = [ordered]@{ feederX = $feeder.Left; feederY = $feeder.Top; bedX = $bed.Left; bedY = $bed.Top
+        feederHidden = $FurnHide.feeder; bedHidden = $FurnHide.bed; ballHidden = $FurnHide.ball; autostart = $AutoStart.on }
     try { [IO.File]::WriteAllText($LayoutFile, ($o | ConvertTo-Json), (New-Object Text.UTF8Encoding($false))) } catch { }
 }
 function Load-Layout {
@@ -2525,6 +2572,8 @@ function Load-Layout {
         $scr = @([Windows.Forms.Screen]::AllScreens | Where-Object { $_.WorkingArea.IntersectsWith($r) })   # 屏幕换了就用默认位置
         if ($scr.Count) { $wa = $scr[0].WorkingArea; $it[0].Location = New-Object Drawing.Point([int]$it[1], ($wa.Bottom - $it[0].Height)) }
     }
+    $FurnHide.feeder = [bool]$o.feederHidden; $FurnHide.bed = [bool]$o.bedHidden; $FurnHide.ball = [bool]$o.ballHidden   # 上次收起来的继续收着
+    if ($o.autostart -eq $false) { $AutoStart.on = $false }
 }
 Load-Layout
 
@@ -2607,7 +2656,7 @@ function Set-FurnHidden($which, $hide) {
     if ($which -eq 'ball') { $Ball.vx = 0; $Ball.vy = 0; $Ball.drag = $false; if (-not $hide) { Place-Ball } }
     Save-Layout
 }
-# 全部关起来 = 关掉程序. 下次打开时大家都会出来 (不然什么都看不到, 不知道怎么开回去)
+# 全部关起来 = 关掉程序. 下次打开 (或开机) 时没关的会出来, 全部都关着的话至少出来一只
 function Visible-Count { @($Pets | Where-Object { -not $_.visitor -and -not $_.hidden }).Count + @(@('feeder', 'bed', 'ball') | Where-Object { -not $FurnHide[$_] }).Count }
 function Close-AllAway {                                              # 直接退出, 不用问
     Quit
@@ -2649,6 +2698,7 @@ function Build-TrayMenu($m) {
     [void](Add-MenuItem $tm2 '便条' { Show-Note })
     [void](Add-MenuItem $tm2 '定时提醒…' { Show-RemindersDialog })
     [void](Add-MenuItem $tm2 '添加宠物…' { Show-AddPetDialog })
+    Add-AutoStartItem $tm2
     [void]$m.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
     [void](Add-MenuItem $m '退出' { Quit })
 }
@@ -3049,7 +3099,7 @@ function Show-RemindersDialog {
 }
 
 # ---------- 自动更新: 从 GitHub 拿新版本, 签名对得上才装 (只有 exe 装的才会更新) ----------
-$AppVersion = 8
+$AppVersion = 9
 $UpdateUrl = 'https://raw.githubusercontent.com/Huiyung99/Laptop-Pet/main/update/'
 $UpdatePubKey = '<RSAKeyValue><Modulus>m43v3YuEWypkH3H1iwF1Rpq0HXVYexJsmpTLMkqTZ+hww+h67OiiaNd8pFFEOGg+TZ1qwLloQW3F/d8wT80XWcx/77qGAfMHjiT2M40jv5kF4fCo9K+AEI9qJvBpGcGW+IukbdHKdi4roQmHiTqF+ShI1U8UueKNzvgGQIsj+eWlZY5jsyKKfz9QTX8pYQEYF8IMUxvMoYSgvNXZLaT4AO0rmYGWlCmn54bW7gZpHLz71PGKeGPAfm8YqbkStyXCFdSE7gP1pthYSZ6CuFF0ev4fXB84nYMNHSq37vcYm5y5gOmW40cszDYHubDbEm1+xsfJKHwy1eqhjL4Xb4VD0h0EnU44U7TQfKyFKJvC5Dj1PfLbMomASjdCPMucFTEwp/UqTI0niuMamv8Y/GbPg+jQm+vGvApN9FZD3b8rnEZyHe9iW0uQJ0pb1lJK80Yrls6JlzF0Cqq+fa7w9U2S21byal0Sr/VUzPVnKdtKx1Prc2X0thLlP73LWHHe2rSh</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LaptopPet'
@@ -3160,6 +3210,7 @@ if ($Live) {
     if (-not $FurnHide.feeder) { $feeder.Show() }; if (-not $FurnHide.bed) { $bed.Show() }; if (-not $FurnHide.ball) { $Ball.form.Show() }
     $Tray.Visible = $true
     Load-Pets
+    if ($AutoStart.on) { Set-AutoStart $true }       # 每次开都写一次, 位置换了也跟得上
     Load-Note
     Load-Chat
     Load-Reminders
