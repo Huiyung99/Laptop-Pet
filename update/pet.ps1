@@ -1492,6 +1492,9 @@ function Build-PetMenu($P) {
 
     $games = Add-SubMenu $m '玩游戏' $P
     [void](Add-MenuItem $games '井字棋…' { param($src, $e) Show-TicTacToe $src.Owner.Tag })
+    [void](Add-MenuItem $games '石头剪刀布…' { param($src, $e) Show-RPS $src.Owner.Tag })
+    [void](Add-MenuItem $games '翻牌配对…' { param($src, $e) Show-Memory $src.Owner.Tag })
+    [void](Add-MenuItem $games '打老鼠…' { param($src, $e) Show-Whack $src.Owner.Tag })
 
     $dress = Add-SubMenu $m '打扮' $P
     [void](Add-MenuItem $dress '换头像照片…' { param($src, $e) $P = $src.Owner.Tag; $bmp = Pick-Photo $P.form; if ($bmp) { Set-PetPhoto $P $bmp } })
@@ -3115,6 +3118,243 @@ function Show-TicTacToe($P) {
     try { [void]$d.ShowDialog() } finally { $st.tm.Stop(); $st.tm.Dispose(); $d.Dispose() }
 }
 
+# 小游戏共用: 窗口、一行字
+function New-GameForm($title, $cw, $ch) {
+    $d = New-Object Windows.Forms.Form
+    $d.Text = $title
+    $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
+    $d.StartPosition = 'CenterScreen'; $d.TopMost = $true; $d.Font = $fontUI
+    $d.ClientSize = New-Object Drawing.Size($cw, $ch)
+    $d
+}
+function New-GameLabel($x, $y, $lw, $lh, $size = 9) {
+    $l = New-Object Windows.Forms.Label; $l.SetBounds($x, $y, $lw, $lh); $l.TextAlign = 'MiddleCenter'
+    if ($size -ne 9) { $l.Font = New-Object Drawing.Font('Microsoft YaHei UI', $size, [Drawing.FontStyle]::Bold) }
+    $l
+}
+function Pet-Cheer($P) { if ($P.kind -eq 'dog') { '汪汪!' } elseif ($P.kind -eq 'cat') { '喵~' } else { '嘿嘿!' } }
+
+# ---------- 石头剪刀布: 宠物会记你上一次出什么, 有时候专门出赢你的 ----------
+$RPSNames = @('石头', '剪刀', '布')          # 0 赢 1, 1 赢 2, 2 赢 0
+function Show-RPS($P) {
+    $d = New-GameForm "跟 $($P.name) 玩石头剪刀布" 320 250
+    $st = @{ pet = $P; me = 0; it = 0; draw = 0; last = -1; rounds = 0; pick = -1 }
+    $st.lb = New-GameLabel 10 8 300 24; $st.lb.Text = '出拳吧!'
+    $st.show = New-GameLabel 10 36 300 60 16; $st.show.Text = "你  ?    VS    ?  $($P.name)"
+    $st.res = New-GameLabel 10 98 300 26 11
+    $st.score = New-GameLabel 10 215 300 22
+    $st.btns = @()
+    for ($i = 0; $i -lt 3; $i++) {
+        $bt = New-Object Windows.Forms.Button; $bt.Text = $RPSNames[$i]; $bt.SetBounds((22 + $i * 96), 140, 84, 60)
+        $bt.Font = New-Object Drawing.Font('Microsoft YaHei UI', 12, [Drawing.FontStyle]::Bold)
+        $bt.Tag = @{ st = $st; i = $i }
+        $bt.add_Click({ param($src, $e) RPS-Throw $src.Tag.st $src.Tag.i })
+        $st.btns += $bt
+    }
+    $st.tm = New-Object Windows.Forms.Timer; $st.tm.Interval = 450; $st.tm.Tag = $st
+    $st.tm.add_Tick({ param($src, $e) $src.Stop(); RPS-Reveal $src.Tag })
+    $d.Controls.AddRange(@($st.lb, $st.show, $st.res, $st.score) + $st.btns); $d.Tag = $st
+    try { [void]$d.ShowDialog() } finally { $st.tm.Stop(); $st.tm.Dispose(); $d.Dispose() }
+}
+function RPS-Throw($st, $i) {
+    $st.pick = $i
+    foreach ($b in $st.btns) { $b.Enabled = $false }
+    $st.show.Text = "你 $($RPSNames[$i])    VS    …  $($st.pet.name)"; $st.res.Text = '石头… 剪刀… 布!'
+    $st.tm.Start()
+}
+function RPS-Reveal($st) {
+    $me = $st.pick; $P = $st.pet
+    $pet = if ($st.last -ge 0 -and $rand.Next(100) -lt 40) { ($st.last + 2) % 3 } else { $rand.Next(3) }   # 猜你会出一样的, 出赢它的
+    $st.last = $me
+    $st.show.Text = "你 $($RPSNames[$me])    VS    $($RPSNames[$pet])  $($P.name)"
+    if ($me -eq $pet) { $st.draw++; $st.res.Text = '平手!'; $st.res.ForeColor = [Drawing.Color]::Gray }
+    elseif ((($me + 1) % 3) -eq $pet) { $st.me++; $st.res.Text = '你赢了!'; $st.res.ForeColor = [Drawing.Color]::RoyalBlue; Say $P '哼, 再来!' 75 }
+    else { $st.it++; $st.res.Text = "$($P.name) 赢了!"; $st.res.ForeColor = [Drawing.Color]::DarkOrange; Say $P "我赢啦! $(Pet-Cheer $P)" 75 }
+    $st.rounds++; if ($st.rounds % 3 -eq 0) { Add-Love $P 5 }      # 每玩 3 次 +5 亲密度
+    $st.score.Text = "你 $($st.me) : $($st.it) $($P.name)   (平手 $($st.draw))"
+    $st.lb.Text = '再出一次吧!'
+    foreach ($b in $st.btns) { $b.Enabled = $true }
+}
+
+# ---------- 翻牌配对: 你和宠物轮流翻两张, 一样就拿走再翻. 宠物记性不错 (看过的牌大概记得 70%) ----------
+function Show-Memory($P) {
+    $d = New-GameForm "跟 $($P.name) 玩翻牌配对" 336 390
+    $names = @($StickerNames | Sort-Object { $rand.Next() } | Select-Object -First 8)
+    $deck = @(($names + $names) | Sort-Object { $rand.Next() })
+    $st = @{ pet = $P; cards = @(); turn = 'me'; first = -1; second = -1; lock = $false; me = 0; it = 0; seen = @{}; phase = ''; over = $false }
+    foreach ($n in $deck) { $st.cards += @{ name = $n; up = $false; who = '' } }
+    $st.lb = New-GameLabel 8 6 320 24; $st.lb.Text = '轮到你: 翻两张牌'
+    $st.box = New-Object Windows.Forms.PictureBox; $st.box.SetBounds(8, 34, 320, 320); $st.box.Tag = $st; $st.box.Cursor = [Windows.Forms.Cursors]::Hand
+    $st.score = New-GameLabel 8 362 320 22; $st.score.Text = "你 0 : 0 $($P.name)"
+    $st.tm = New-Object Windows.Forms.Timer; $st.tm.Interval = 700; $st.tm.Tag = $st
+    $st.box.add_Paint({ param($src, $e) Draw-Memory $src.Tag $e.Graphics })
+    $st.box.add_MouseClick({ param($src, $e)
+        $st = $src.Tag
+        if ($st.turn -ne 'me' -or $st.lock -or $st.over) { return }
+        $cx = [int][Math]::Floor(($e.X - 4) / 79); $cy = [int][Math]::Floor(($e.Y - 4) / 79)
+        if ($cx -lt 0 -or $cx -gt 3 -or $cy -lt 0 -or $cy -gt 3) { return }
+        Mem-Flip $st ($cy * 4 + $cx)
+    })
+    $st.tm.add_Tick({ param($src, $e) $src.Stop(); Mem-Step $src.Tag })
+    $d.Controls.AddRange(@($st.lb, $st.box, $st.score))
+    try { [void]$d.ShowDialog() } finally { $st.tm.Stop(); $st.tm.Dispose(); $d.Dispose() }
+}
+function Mem-See($st, $i) { if ($rand.Next(100) -lt 70) { $st.seen[$i] = $st.cards[$i].name } }   # 宠物有看到 (不一定记得住)
+function Mem-Flip($st, $i) {                  # 翻一张; 翻完两张就等一下再看对不对
+    $c = $st.cards[$i]
+    if ($c.up -or $c.who) { return }
+    $c.up = $true; Mem-See $st $i; $st.box.Invalidate()
+    if ($st.first -lt 0) { $st.first = $i; return }
+    $st.second = $i; $st.lock = $true; $st.phase = 'check'; $st.tm.Interval = 800; $st.tm.Start()
+}
+function Mem-Step($st) {
+    switch ($st.phase) {
+        'check' {
+            $a = $st.cards[$st.first]; $b = $st.cards[$st.second]
+            if ($a.name -eq $b.name) {                         # 一样: 拿走, 再翻一次
+                $a.who = $st.turn; $b.who = $st.turn; $st.seen.Remove($st.first); $st.seen.Remove($st.second)
+                if ($st.turn -eq 'me') { $st.me++ } else { $st.it++ }
+            } else { $a.up = $false; $b.up = $false; $st.turn = if ($st.turn -eq 'me') { 'pet' } else { 'me' } }
+            $st.first = -1; $st.second = -1; $st.lock = $false
+            $st.score.Text = "你 $($st.me) : $($st.it) $($st.pet.name)"
+            $st.box.Invalidate()
+            if ($st.me + $st.it -eq 8) { Mem-End $st; return }
+            if ($st.turn -eq 'pet') { $st.lb.Text = "$($st.pet.name) 在翻…"; $st.lock = $true; $st.phase = 'pet1'; $st.tm.Interval = 700; $st.tm.Start() }
+            else { $st.lb.Text = if ($a.name -eq $b.name -and $a.who -eq 'me') { '配对成功! 再翻两张' } else { '轮到你: 翻两张牌' } }
+        }
+        'pet1' {
+            $st.lock = $false
+            $pair = Mem-KnownPair $st
+            $i = if ($pair) { $pair[0] } else { Mem-Unknown $st -1 }
+            $st.cards[$i].up = $true; Mem-See $st $i; $st.first = $i; $st.box.Invalidate()
+            $st.lock = $true; $st.phase = 'pet2'; $st.tm.Interval = 700; $st.tm.Start()
+        }
+        'pet2' {
+            $f = $st.first; $nm = $st.cards[$f].name
+            $j = @($st.seen.Keys | Where-Object { $_ -ne $f -and $st.seen[$_] -eq $nm -and -not $st.cards[$_].who })[0]
+            if ($null -eq $j) { $j = Mem-Unknown $st $f }
+            $st.cards[$j].up = $true; Mem-See $st $j; $st.second = $j; $st.box.Invalidate()
+            $st.phase = 'check'; $st.tm.Interval = 900; $st.tm.Start()
+        }
+    }
+}
+function Mem-KnownPair($st) {                 # 记得两张一样的在哪里
+    $ks = @($st.seen.Keys | Where-Object { -not $st.cards[$_].who })
+    foreach ($a in $ks) { foreach ($b in $ks) { if ($a -lt $b -and $st.seen[$a] -eq $st.seen[$b]) { return @($a, $b) } } }
+    $null
+}
+function Mem-Unknown($st, $skip) {            # 翻一张还没看过的 (都看过了就随便翻)
+    $open = @(0..15 | Where-Object { $_ -ne $skip -and -not $st.cards[$_].who -and -not $st.cards[$_].up })
+    $new = @($open | Where-Object { -not $st.seen.ContainsKey($_) })
+    if ($new.Count) { $new[$rand.Next($new.Count)] } else { $open[$rand.Next($open.Count)] }
+}
+function Mem-End($st) {
+    $st.over = $true; $P = $st.pet
+    if ($st.me -gt $st.it) { $st.lb.Text = "你赢了! $($st.me) : $($st.it)"; Say $P '你记性好好!' 100 }
+    elseif ($st.me -lt $st.it) { $st.lb.Text = "$($P.name) 赢了! $($st.it) : $($st.me)"; Say $P "我记性比你好! $(Pet-Cheer $P)" 100 }
+    else { $st.lb.Text = '平手! 4 : 4'; Say $P '平手! 再来一局?' 100 }
+    Add-Love $P 5
+}
+function Draw-Memory($st, $g) {
+    $g.SmoothingMode = 'AntiAlias'
+    $back = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(255, 245, 170, 90))
+    $face = New-Object Drawing.SolidBrush ([Drawing.Color]::White)
+    $penMe = New-Object Drawing.Pen([Drawing.Color]::FromArgb(255, 70, 130, 220), 4)
+    $penIt = New-Object Drawing.Pen([Drawing.Color]::FromArgb(255, 240, 150, 50), 4)
+    $penUp = New-Object Drawing.Pen([Drawing.Color]::FromArgb(255, 200, 190, 180), 2)
+    for ($i = 0; $i -lt 16; $i++) {
+        $c = $st.cards[$i]; $x = 4 + ($i % 4) * 79; $y = 4 + [Math]::Floor($i / 4) * 79
+        $path = New-Object Drawing.Drawing2D.GraphicsPath; $r = 12
+        $path.AddArc((F $x), (F $y), (F $r), (F $r), 180, 90); $path.AddArc((F ($x + 72 - $r)), (F $y), (F $r), (F $r), 270, 90)
+        $path.AddArc((F ($x + 72 - $r)), (F ($y + 72 - $r)), (F $r), (F $r), 0, 90); $path.AddArc((F $x), (F ($y + 72 - $r)), (F $r), (F $r), 90, 90); $path.CloseFigure()
+        if ($c.up -or $c.who) {
+            $g.FillPath($face, $path)
+            $pen = if ($c.who -eq 'me') { $penMe } elseif ($c.who -eq 'pet') { $penIt } else { $penUp }
+            $g.DrawPath($pen, $path)
+            Draw-Sticker $g $c.name ($x + 36) ($y + 36) 46
+        } else {
+            $g.FillPath($back, $path)
+            Draw-Sticker $g 'paw' ($x + 36) ($y + 36) 30
+        }
+        $path.Dispose()
+    }
+    $back.Dispose(); $face.Dispose(); $penMe.Dispose(); $penIt.Dispose(); $penUp.Dispose()
+}
+
+# ---------- 打老鼠: 30 秒, 老鼠从洞里探头, 点到就 +1, 越来越快 ----------
+$WhackBest = @{ score = 0 }
+function Whack-MouseImage {
+    if ($WhackBest.img) { return $WhackBest.img }
+    $L = New-PetLook '' 'mouse' '' '灰色'; $L.frame = 30; $L.msgT = 0
+    $full = New-Object Drawing.Bitmap($W, $H); $gr = [Drawing.Graphics]::FromImage($full)
+    $saveLabel = ${function:Label}; ${function:Label} = {}
+    try { Draw-Pet $L $gr } finally { ${function:Label} = $saveLabel; $gr.Dispose() }
+    $WhackBest.img = $full.Clone((New-Object Drawing.Rectangle(12, 36, 72, 38)), $full.PixelFormat); $full.Dispose()
+    $WhackBest.img
+}
+function Show-Whack($P) {
+    $d = New-GameForm "跟 $($P.name) 玩打老鼠" 320 380
+    $st = @{ pet = $P; score = 0; t = 0; hole = -1; upT = 0; upLen = 0; wait = 20; hit = 0; on = $false; img = (Whack-MouseImage) }
+    $st.lb = New-GameLabel 10 6 300 24; $st.lb.Text = "最高分: $($WhackBest.score)"
+    $st.box = New-Object Windows.Forms.PictureBox; $st.box.SetBounds(10, 34, 300, 270); $st.box.Tag = $st
+    $st.box.BackColor = [Drawing.Color]::FromArgb(255, 170, 215, 130); $st.box.Cursor = [Windows.Forms.Cursors]::Hand
+    $st.go = New-Object Windows.Forms.Button; $st.go.Text = '开始!'; $st.go.SetBounds(110, 316, 100, 34); $st.go.Tag = $st
+    $st.tm = New-Object Windows.Forms.Timer; $st.tm.Interval = 40; $st.tm.Tag = $st
+    $st.go.add_Click({ param($src, $e) $st = $src.Tag; $st.score = 0; $st.t = 0; $st.hole = -1; $st.wait = 15; $st.on = $true; $src.Enabled = $false; $st.tm.Start() })
+    $st.tm.add_Tick({ param($src, $e) Whack-Tick $src.Tag })
+    $st.box.add_Paint({ param($src, $e) Draw-Whack $src.Tag $e.Graphics })
+    $st.box.add_MouseDown({ param($src, $e)
+        $st = $src.Tag
+        if (-not $st.on -or $st.hole -lt 0 -or $st.hit -gt 0) { return }
+        $hx = ($st.hole % 3) * 100 + 50; $hy = [Math]::Floor($st.hole / 3) * 90 + 62
+        if ([Math]::Abs($e.X - $hx) -lt 42 -and $e.Y -gt $hy - 50 -and $e.Y -lt $hy + 12) { $st.score++; $st.hit = 8 }   # 打到了! (显示一下星星)
+    })
+    $d.Controls.AddRange(@($st.lb, $st.box, $st.go))
+    try { [void]$d.ShowDialog() } finally { $st.tm.Stop(); $st.tm.Dispose(); $d.Dispose() }
+}
+function Whack-Tick($st) {
+    $st.t++
+    if ($st.t -ge 750) {                                   # 30 秒到
+        $st.tm.Stop(); $st.on = $false; $st.hole = -1; $st.go.Enabled = $true; $st.go.Text = '再玩一次'
+        $P = $st.pet; $new = $st.score -gt $WhackBest.score
+        if ($new) { $WhackBest.score = $st.score }
+        $st.lb.Text = "打到 $($st.score) 只!" + $(if ($new) { '  新纪录!' } else { "  (最高 $($WhackBest.score))" })
+        Say $P $(if ($st.score -ge 20) { "好厉害! $(Pet-Cheer $P)" } elseif ($st.score -ge 10) { '不错嘛!' } else { '老鼠跑太快了…' }) 100
+        Add-Love $P 5
+        $st.box.Invalidate(); return
+    }
+    if ($st.hit -gt 0) { $st.hit--; if ($st.hit -eq 0) { $st.hole = -1; $st.wait = $rand.Next(4, 10) } }
+    elseif ($st.hole -ge 0) { $st.upT++; if ($st.upT -ge $st.upLen) { $st.hole = -1; $st.wait = $rand.Next(4, 10) } }    # 没打到, 缩回去
+    else {
+        $st.wait--
+        if ($st.wait -le 0) {
+            $old = $st.last; do { $st.hole = $rand.Next(9) } while ($st.hole -eq $old)
+            $st.last = $st.hole; $st.upT = 0; $st.upLen = [Math]::Max(14, 30 - [int]($st.t / 40))   # 一开始 1.2 秒, 后来只有 0.56 秒
+        }
+    }
+    $st.lb.Text = "分数 $($st.score)     还有 $([Math]::Ceiling((750 - $st.t) / 25)) 秒"
+    $st.box.Invalidate()
+}
+function Draw-Whack($st, $g) {
+    $g.SmoothingMode = 'AntiAlias'
+    $holeBr = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(255, 90, 60, 40))
+    $rimBr = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(255, 140, 100, 70))
+    for ($i = 0; $i -lt 9; $i++) {
+        $hx = ($i % 3) * 100 + 50; $hy = [Math]::Floor($i / 3) * 90 + 62
+        $g.FillEllipse($rimBr, (F ($hx - 40)), (F ($hy - 12)), (F 80), (F 26)); $g.FillEllipse($holeBr, (F ($hx - 34)), (F ($hy - 9)), (F 68), (F 19))
+        if ($i -eq $st.hole) {
+            $rise = if ($st.hit -gt 0) { 1 } else { [Math]::Min(1, $st.upT / 4) }      # 慢慢探出来
+            $gs = $g.Save()
+            $g.SetClip((New-Object Drawing.RectangleF((F ($hx - 50)), (F ($hy - 70)), (F 100), (F 72))))
+            $g.DrawImage($st.img, (F ($hx - 40)), (F ($hy + 4 - 44 * $rise)), (F 86), (F 45))
+            $g.Restore($gs)
+            if ($st.hit -gt 0) { Draw-Sticker $g 'star' $hx ($hy - 40) 34; $g.DrawString('啪!', $fontChatB, $brDark, (F ($hx + 14)), (F ($hy - 62))) }
+        }
+    }
+    if (-not $st.on -and $st.t -eq 0) { $g.DrawString('按「开始!」, 老鼠探头就点它!', $fontUI, $brDark, (F 62), (F 4)) }
+    $holeBr.Dispose(); $rimBr.Dispose()
+}
+
 # ---------- 定时提醒: 到时间就有一只宠物跑出来提醒你 (存在 reminders.json) ----------
 $RemindersFile = Join-Path $PSScriptRoot 'reminders.json'
 $DefaultReminders = @(
@@ -3219,7 +3459,7 @@ function Show-RemindersDialog {
 }
 
 # ---------- 自动更新: 从 GitHub 拿新版本, 签名对得上才装 (只有 exe 装的才会更新) ----------
-$AppVersion = 10
+$AppVersion = 11
 $UpdateUrl = 'https://raw.githubusercontent.com/Huiyung99/Laptop-Pet/main/update/'
 $UpdatePubKey = '<RSAKeyValue><Modulus>m43v3YuEWypkH3H1iwF1Rpq0HXVYexJsmpTLMkqTZ+hww+h67OiiaNd8pFFEOGg+TZ1qwLloQW3F/d8wT80XWcx/77qGAfMHjiT2M40jv5kF4fCo9K+AEI9qJvBpGcGW+IukbdHKdi4roQmHiTqF+ShI1U8UueKNzvgGQIsj+eWlZY5jsyKKfz9QTX8pYQEYF8IMUxvMoYSgvNXZLaT4AO0rmYGWlCmn54bW7gZpHLz71PGKeGPAfm8YqbkStyXCFdSE7gP1pthYSZ6CuFF0ev4fXB84nYMNHSq37vcYm5y5gOmW40cszDYHubDbEm1+xsfJKHwy1eqhjL4Xb4VD0h0EnU44U7TQfKyFKJvC5Dj1PfLbMomASjdCPMucFTEwp/UqTI0niuMamv8Y/GbPg+jQm+vGvApN9FZD3b8rnEZyHe9iW0uQJ0pb1lJK80Yrls6JlzF0Cqq+fa7w9U2S21byal0Sr/VUzPVnKdtKx1Prc2X0thLlP73LWHHe2rSh</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LaptopPet'
