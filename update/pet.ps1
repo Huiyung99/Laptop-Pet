@@ -1490,6 +1490,9 @@ function Build-PetMenu($P) {
     $stay.add_CheckedChanged({ param($src, $e) $src.Owner.Tag.stay = $src.Checked })
     [void](Add-MenuItem $care '加满喂食器' { Refill })
 
+    $games = Add-SubMenu $m '玩游戏' $P
+    [void](Add-MenuItem $games '井字棋…' { param($src, $e) Show-TicTacToe $src.Owner.Tag })
+
     $dress = Add-SubMenu $m '打扮' $P
     [void](Add-MenuItem $dress '换头像照片…' { param($src, $e) $P = $src.Owner.Tag; $bmp = Pick-Photo $P.form; if ($bmp) { Set-PetPhoto $P $bmp } })
     $P.miNoPhoto = Add-MenuItem $dress '拿掉照片' { param($src, $e) Set-PetPhoto $src.Owner.Tag $null }
@@ -1502,7 +1505,7 @@ function Build-PetMenu($P) {
     [void](Add-MenuItem $tools '便条' { Show-Note })
     [void](Add-MenuItem $tools '定时提醒…' { Show-RemindersDialog })
     $P.miTalk = Add-MenuItem $tools '说话…' { param($src, $e) Show-Talk $src.Owner.Tag }
-    $P.miPair = Add-MenuItem $tools '聊天配对…' { Show-Pair }
+    $P.miPair = Add-MenuItem $tools '聊天配对…' { param($src, $e) Show-Pair $src.Owner.Tag }
     Add-AutoStartItem $tools
 
     $pets = Add-SubMenu $m '宠物' $P
@@ -2764,7 +2767,7 @@ function Load-Note {
 # ---------- 聊天: 跟朋友的宠物说话 (经过 ntfy.sh 转送, 用配对码加密) ----------
 $ChatFile = Join-Path $PSScriptRoot 'chat.json'
 $Chat = @{ code = ''; me = ''; key = $null; topic = ''; ctl = $null; ps = $null; talk = $null; sending = (New-Object System.Collections.ArrayList)
-           q = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'); nextShow = 0; visitors = @{} }
+           q = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'); nextShow = 0; pet = '' }      # pet: 配对的是我哪一只 (朋友的话显示在它头上)
 $fontChatB = New-Object Drawing.Font('Microsoft YaHei UI', 9, [Drawing.FontStyle]::Bold)
 
 # 配对码 -> 加密钥匙 + ntfy 频道名 (服务器只看到频道名和乱码, 看不到配对码)
@@ -2840,13 +2843,13 @@ function Stop-Chat {
 function Save-Chat {
     if (-not $Live) { return }
     $since = if ($Chat.ctl -and $Chat.ctl.since) { $Chat.ctl.since } else { [string][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }   # 下次开从这里接着收
-    $o = [ordered]@{ code = $Chat.code; me = $Chat.me; since = $since }
+    $o = [ordered]@{ code = $Chat.code; me = $Chat.me; since = $since; pet = $Chat.pet }
     try { [IO.File]::WriteAllText($ChatFile, ($o | ConvertTo-Json), (New-Object Text.UTF8Encoding($false))) } catch { }
 }
 function Load-Chat {
     $since = ''
     if (Test-Path -LiteralPath $ChatFile) {
-        try { $o = [IO.File]::ReadAllText($ChatFile) | ConvertFrom-Json; $Chat.code = [string]$o.code; $Chat.me = [string]$o.me; $since = [string]$o.since } catch { }
+        try { $o = [IO.File]::ReadAllText($ChatFile) | ConvertFrom-Json; $Chat.code = [string]$o.code; $Chat.me = [string]$o.me; $since = [string]$o.since; $Chat.pet = [string]$o.pet } catch { }
     }
     if (-not $Chat.me) { $Chat.me = [guid]::NewGuid().ToString('N').Substring(0, 12) }    # 认出自己发的消息
     if ($Chat.code) { Start-Chat $since }
@@ -2858,6 +2861,7 @@ function Send-Chat($P, $text) {
     if (-not $text -or -not $Chat.code -or -not $Pets.Contains($P)) { return }
     if ($text.Length -gt 300) { $text = $text.Substring(0, 300) }
     Show-Chat $P $P.name $text
+    if ($Chat.pet -ne $P.name) { $Chat.pet = $P.name; Save-Chat }      # 用哪一只说话, 朋友回的就显示在哪一只
     $payload = [ordered]@{ v = 1; id = $Chat.me; name = $P.name; kind = $P.kind; breed = $P.breed; color = $P.color; text = $text } | ConvertTo-Json -Compress
     $wc = New-Object Net.WebClient
     $wc.Encoding = [Text.Encoding]::UTF8; $wc.Headers.Add('User-Agent', 'LaptopPet')
@@ -2874,24 +2878,22 @@ function Check-Sending {
     }
 }
 
-# 朋友说话: 朋友的宠物跑来我的屏幕, 头上显示他说的话, 30 秒没说话就回家
+# 朋友说话: 显示在我配对的那只宠物头上 (它关起来了就找别只, 全部关着就用右下角通知)
+function Chat-Pet {
+    $mine = @($Pets | Where-Object { -not $_.visitor -and -not $_.hidden })
+    $P = @($mine | Where-Object { $_.name -eq $Chat.pet })[0]
+    if (-not $P) { $P = @($mine | Where-Object { $_.kind -ne 'fish' -and $_.kind -ne 'mouse' })[0] }
+    if (-not $P) { $P = $mine[0] }
+    $P
+}
 function Receive-Chat($raw) {
     try { $o = (Chat-Decrypt $raw) | ConvertFrom-Json } catch { return }   # 解不开 = 不是我们的
     if (-not $o.text -or [string]$o.id -eq $Chat.me) { return }
-    $vid = Cut-Text $o.id 40
     $name = Cut-Text $o.name 12; if (-not $name) { $name = '朋友' }
     $text = Cut-Text $o.text 300                                       # 太长的字截掉, 对话框不会变超大
-    foreach ($k in @($Chat.visitors.Keys)) { if ($Chat.visitors[$k].form.IsDisposed) { $Chat.visitors.Remove($k) } }
-    $v = $Chat.visitors[$vid]
-    if (-not $v -or $v.form.IsDisposed) {
-        if ($Chat.visitors.Count -ge 3) { return }                    # 最多 3 只朋友的宠物同时来串门
-        $color = if ($Colors.Contains([string]$o.color)) { [string]$o.color } else { '橘色' }
-        $v = New-Pet $name ([string]$o.kind) $color ([string]$o.breed)
-        $v.visitor = $true; $v.msgT = 0
-        $Chat.visitors[$vid] = $v
-    }
-    $v.visitorUntil = $Clock.tick + 750
-    Show-Chat $v $name $text
+    $P = Chat-Pet
+    if ($P) { Show-Chat $P "$name 说:" $text }
+    elseif ($Tray) { $Tray.ShowBalloonTip(10000, "$name 说:", $text, 'Info') }
 }
 # 去掉奇怪的控制字符, 只留前面 $max 个字
 function Cut-Text($s, $max) {
@@ -2966,9 +2968,9 @@ function Show-Talk($P) {
 }
 
 # 配对: 生成一个码发给朋友, 或输入朋友的码. 同一个码可以给几个人, 大家一起聊
-function Show-Pair {
+function Show-Pair($P) {                 # $P: 从哪只宠物的菜单打开, 就配对那一只
     $d = New-Object Windows.Forms.Form
-    $d.Text = '聊天配对'
+    $d.Text = if ($P) { "聊天配对 — $($P.name)" } else { '聊天配对' }
     $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
     $d.StartPosition = 'CenterScreen'; $d.TopMost = $true; $d.Font = $fontUI
     $d.ClientSize = New-Object Drawing.Size(340, 150)
@@ -2991,8 +2993,126 @@ function Show-Pair {
         if ($d.ShowDialog() -ne 'OK') { return }
         $code = Normalize-Code $tb.Text
         if ($code -and $code.Length -ne 8) { [void][Windows.Forms.MessageBox]::Show('配对码是 8 个字, 像 K7Q2-M9XP', '聊天配对'); return }
-        if ($code -ne $Chat.code) { $Chat.code = $code; if ($code) { Start-Chat '' } else { Stop-Chat }; Save-Chat }
+        if ($code -ne $Chat.code) { $Chat.code = $code; if ($code) { Start-Chat '' } else { Stop-Chat } }
+        if ($P) { $Chat.pet = $P.name }
+        Save-Chat
     } finally { $d.Dispose() }
+}
+
+# ---------- 小游戏: 跟宠物玩井字棋 (你 ✕, 宠物 ○, 轮流先下) ----------
+$TTTLines = @(@(0, 1, 2), @(3, 4, 5), @(6, 7, 8), @(0, 3, 6), @(1, 4, 7), @(2, 5, 8), @(0, 4, 8), @(2, 4, 6))
+function TTT-Winner($b) {                  # 'X' / 'O' / 'draw' / '' (还没完)
+    foreach ($l in $TTTLines) { if ($b[$l[0]] -and $b[$l[0]] -eq $b[$l[1]] -and $b[$l[0]] -eq $b[$l[2]]) { return $b[$l[0]] } }
+    if (-not @($b | Where-Object { -not $_ }).Count) { return 'draw' }
+    ''
+}
+function TTT-Line($b) { foreach ($l in $TTTLines) { if ($b[$l[0]] -and $b[$l[0]] -eq $b[$l[1]] -and $b[$l[0]] -eq $b[$l[2]]) { return $l } }; $null }
+# 宠物会把后面每一步都想完 (记住算过的棋盘, 很快). 1 = 宠物赢, -1 = 你赢, 0 = 平手
+$TTTMemo = @{}
+function TTT-Score($b, $turn) {
+    $key = ($b -join ',') + $turn
+    if ($TTTMemo.ContainsKey($key)) { return $TTTMemo[$key] }
+    $w = TTT-Winner $b
+    if ($w -eq 'O') { $v = 1 } elseif ($w -eq 'X') { $v = -1 } elseif ($w -eq 'draw') { $v = 0 }
+    else {
+        $next = if ($turn -eq 'O') { 'X' } else { 'O' }
+        $v = if ($turn -eq 'O') { -2 } else { 2 }
+        for ($i = 0; $i -lt 9; $i++) {
+            if ($b[$i]) { continue }
+            $b[$i] = $turn; $s = TTT-Score $b $next; $b[$i] = ''
+            if (($turn -eq 'O' -and $s -gt $v) -or ($turn -eq 'X' -and $s -lt $v)) { $v = $s }
+        }
+    }
+    $TTTMemo[$key] = $v
+    $v
+}
+function TTT-WinsNow($b, $who) { foreach ($i in 0..8) { if (-not $b[$i]) { $b[$i] = $who; $w = TTT-Winner $b; $b[$i] = ''; if ($w -eq $who) { return $i } } }; -1 }
+function TTT-PetMove($b) {                 # 下最好的一步; 偶尔 (10%) 下一步不太好的, 你才有机会赢
+    $free = @(0..8 | Where-Object { -not $b[$_] })
+    $i = TTT-WinsNow $b 'O'; if ($i -ge 0) { return $i }                    # 能赢马上赢
+    if ($free.Count -eq 9) { $first = @(0, 2, 4, 6, 8); return $first[$rand.Next($first.Count)] }   # 第一步: 中间或角落
+    $sc = @{}; foreach ($i in $free) { $b[$i] = 'O'; $sc[$i] = TTT-Score $b 'X'; $b[$i] = '' }
+    $best = ($sc.Values | Measure-Object -Maximum).Maximum
+    if ($rand.Next(100) -lt 10) {          # 不小心: 下一步不是最好、但也不会马上输的
+        $meh = @($free | Where-Object { $sc[$_] -lt $best } | Where-Object { $b[$_] = 'O'; $bad = (TTT-WinsNow $b 'X') -ge 0; $b[$_] = ''; -not $bad })
+        if ($meh.Count) { return $meh[$rand.Next($meh.Count)] }
+    }
+    $top = @($free | Where-Object { $sc[$_] -eq $best })
+    $top[$rand.Next($top.Count)]
+}
+function TTT-New($st) {
+    $st.b = @('', '', '', '', '', '', '', '', ''); $st.over = $false; $st.round++
+    $petFirst = ($st.round % 2 -eq 0)
+    $st.lb.Text = if ($petFirst) { "这局 $($st.pet.name) 先下…" } else { '你是 ✕, 先下吧!' }
+    $st.box.Invalidate()
+    if ($petFirst) { $st.busy = $true; $st.tm.Start() } else { $st.busy = $false }
+}
+function TTT-Check($st) {
+    $w = TTT-Winner $st.b
+    if (-not $w) { return $false }
+    $st.over = $true; $P = $st.pet; $nm = $P.name
+    switch ($w) {
+        'X' { $st.me++; $st.lb.Text = '你赢了!'; Say $P '你好厉害! 再来一局?' 100 }
+        'O' { $st.it++; $st.lb.Text = "$nm 赢了!"; Say $P $(if ($P.kind -eq 'dog') { '我赢啦! 汪汪!' } elseif ($P.kind -eq 'cat') { '我赢啦! 喵~' } else { '我赢啦!' }) 100 }
+        default { $st.draw++; $st.lb.Text = '平手!'; Say $P '平手! 再来再来!' 100 }
+    }
+    Add-Love $P 5                                       # 玩一局 +5 亲密度
+    $st.score.Text = "你 $($st.me) : $($st.it) $nm   (平手 $($st.draw))"
+    $st.box.Invalidate()
+    $true
+}
+function Show-TicTacToe($P) {
+    $d = New-Object Windows.Forms.Form
+    $d.Text = "跟 $($P.name) 玩井字棋"
+    $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
+    $d.StartPosition = 'CenterScreen'; $d.TopMost = $true; $d.Font = $fontUI
+    $d.ClientSize = New-Object Drawing.Size(300, 362)
+    $st = @{ pet = $P; b = @(); over = $false; busy = $false; round = 0; me = 0; it = 0; draw = 0 }
+    $st.lb = New-Object Windows.Forms.Label; $st.lb.SetBounds(15, 10, 270, 22)
+    $st.box = New-Object Windows.Forms.PictureBox; $st.box.SetBounds(15, 38, 270, 270); $st.box.BackColor = [Drawing.Color]::White
+    $st.box.Cursor = [Windows.Forms.Cursors]::Hand; $st.box.Tag = $st
+    $st.score = New-Object Windows.Forms.Label; $st.score.SetBounds(15, 322, 180, 22); $st.score.Text = "你 0 : 0 $($P.name)"
+    $again = New-Object Windows.Forms.Button; $again.Text = '再来一局'; $again.SetBounds(200, 317, 85, 30); $again.Tag = $st
+    $st.tm = New-Object Windows.Forms.Timer; $st.tm.Interval = 250; $st.tm.Tag = $st      # 宠物想一下才下 (加上算棋的时间, 大概 1 秒)
+    $st.box.add_Paint({ param($src, $e)
+        $st = $src.Tag; $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+        $grid = New-Object Drawing.Pen([Drawing.Color]::FromArgb(255, 200, 190, 180), 4)
+        foreach ($k in 1, 2) { $g.DrawLine($grid, (F ($k * 90)), (F 8), (F ($k * 90)), (F 262)); $g.DrawLine($grid, (F 8), (F ($k * 90)), (F 262), (F ($k * 90))) }
+        $px = New-Object Drawing.Pen([Drawing.Color]::FromArgb(255, 70, 130, 220), 8); $px.StartCap = 'Round'; $px.EndCap = 'Round'
+        $po = New-Object Drawing.Pen([Drawing.Color]::FromArgb(255, 240, 150, 50), 8)
+        for ($i = 0; $i -lt 9; $i++) {
+            $x = ($i % 3) * 90; $y = [Math]::Floor($i / 3) * 90
+            if ($st.b[$i] -eq 'X') { $g.DrawLine($px, (F ($x + 24)), (F ($y + 24)), (F ($x + 66)), (F ($y + 66))); $g.DrawLine($px, (F ($x + 66)), (F ($y + 24)), (F ($x + 24)), (F ($y + 66))) }
+            elseif ($st.b[$i] -eq 'O') { $g.DrawEllipse($po, (F ($x + 22)), (F ($y + 22)), (F 46), (F 46)) }
+        }
+        $l = TTT-Line $st.b
+        if ($l) {
+            $pw = New-Object Drawing.Pen([Drawing.Color]::FromArgb(200, 220, 60, 60), 6); $pw.StartCap = 'Round'; $pw.EndCap = 'Round'
+            $g.DrawLine($pw, (F (($l[0] % 3) * 90 + 45)), (F ([Math]::Floor($l[0] / 3) * 90 + 45)), (F (($l[2] % 3) * 90 + 45)), (F ([Math]::Floor($l[2] / 3) * 90 + 45)))
+            $pw.Dispose()
+        }
+        $grid.Dispose(); $px.Dispose(); $po.Dispose()
+    })
+    $st.box.add_MouseClick({ param($src, $e)
+        $st = $src.Tag
+        if ($st.over -or $st.busy -or $e.Button -ne 'Left') { return }
+        $i = [int]([Math]::Min(2, [Math]::Floor($e.Y / 90)) * 3 + [Math]::Min(2, [Math]::Floor($e.X / 90)))
+        if ($st.b[$i]) { return }
+        $st.b[$i] = 'X'; $st.box.Invalidate()
+        if (TTT-Check $st) { return }
+        $st.busy = $true; $st.lb.Text = "$($st.pet.name) 在想…"; $st.tm.Start()
+    })
+    $st.tm.add_Tick({ param($src, $e)
+        $src.Stop(); $st = $src.Tag
+        if ($st.over) { return }
+        $st.b[(TTT-PetMove $st.b)] = 'O'; $st.busy = $false; $st.box.Invalidate()
+        if (-not (TTT-Check $st)) { $st.lb.Text = '轮到你了 ✕' }
+    })
+    $again.add_Click({ param($src, $e) TTT-New $src.Tag })
+    $d.Controls.AddRange(@($st.lb, $st.box, $st.score, $again))
+    $d.Tag = $st
+    TTT-New $st
+    try { [void]$d.ShowDialog() } finally { $st.tm.Stop(); $st.tm.Dispose(); $d.Dispose() }
 }
 
 # ---------- 定时提醒: 到时间就有一只宠物跑出来提醒你 (存在 reminders.json) ----------
@@ -3099,7 +3219,7 @@ function Show-RemindersDialog {
 }
 
 # ---------- 自动更新: 从 GitHub 拿新版本, 签名对得上才装 (只有 exe 装的才会更新) ----------
-$AppVersion = 9
+$AppVersion = 10
 $UpdateUrl = 'https://raw.githubusercontent.com/Huiyung99/Laptop-Pet/main/update/'
 $UpdatePubKey = '<RSAKeyValue><Modulus>m43v3YuEWypkH3H1iwF1Rpq0HXVYexJsmpTLMkqTZ+hww+h67OiiaNd8pFFEOGg+TZ1qwLloQW3F/d8wT80XWcx/77qGAfMHjiT2M40jv5kF4fCo9K+AEI9qJvBpGcGW+IukbdHKdi4roQmHiTqF+ShI1U8UueKNzvgGQIsj+eWlZY5jsyKKfz9QTX8pYQEYF8IMUxvMoYSgvNXZLaT4AO0rmYGWlCmn54bW7gZpHLz71PGKeGPAfm8YqbkStyXCFdSE7gP1pthYSZ6CuFF0ev4fXB84nYMNHSq37vcYm5y5gOmW40cszDYHubDbEm1+xsfJKHwy1eqhjL4Xb4VD0h0EnU44U7TQfKyFKJvC5Dj1PfLbMomASjdCPMucFTEwp/UqTI0niuMamv8Y/GbPg+jQm+vGvApN9FZD3b8rnEZyHe9iW0uQJ0pb1lJK80Yrls6JlzF0Cqq+fa7w9U2S21byal0Sr/VUzPVnKdtKx1Prc2X0thLlP73LWHHe2rSh</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'LaptopPet'
@@ -3170,7 +3290,6 @@ $timer.add_Tick({
     foreach ($P in @($Pets)) {
         if ($P.form.IsDisposed) { continue }      # 刚被送走 / 被吃掉
         if ($P.hidden) { continue }               # 关起来了: 不动、不饿、不累
-        if ($P.visitor -and $Clock.tick -gt $P.visitorUntil) { $P.form.Close(); $P.form.Dispose(); continue }   # 朋友的宠物回家了
         if ($P.hover -and -not $P.form.Bounds.Contains([Windows.Forms.Cursor]::Position)) { $P.hover = $false }   # 以防没收到滑鼠离开
         $P.frame++
         if ($P.msgT -gt 0) { $P.msgT-- }
